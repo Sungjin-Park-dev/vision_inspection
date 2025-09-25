@@ -21,6 +21,7 @@ import torch
 
 # Standard Library
 import argparse
+from time import perf_counter
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -144,9 +145,10 @@ OPEN3D_TO_ISAAC_ROT = np.array(
 @dataclass
 class Viewpoint:
     index: int
-    open3d_pose: Optional[np.ndarray] = None
-    isaac_pose: Optional[np.ndarray] = None
-    ik_solution: List[np.ndarray] = field(default_factory=list)
+    local_pose: Optional[np.ndarray] = None
+    world_pose: Optional[np.ndarray] = None
+    all_ik_solutions: List[np.ndarray] = field(default_factory=list)
+    safe_ik_solutions: List[np.ndarray] = field(default_factory=list)
 
 
 class ViewpointList:
@@ -215,9 +217,9 @@ def update_viewpoints_world_pose(viewpoints: Iterable[Viewpoint], reference_prim
     if reference_prim is None:
         return
     for viewpoint in viewpoints:
-        if viewpoint.open3d_pose is None:
+        if viewpoint.local_pose is None:
             continue
-        viewpoint.isaac_pose = open3d_pose_to_world(viewpoint.open3d_pose, reference_prim)
+        viewpoint.world_pose = open3d_pose_to_world(viewpoint.local_pose, reference_prim)
 
 
 def collect_viewpoint_world_matrices(
@@ -227,9 +229,9 @@ def collect_viewpoint_world_matrices(
     indices: List[int] = []
 
     for idx, viewpoint in enumerate(viewpoints):
-        if viewpoint.isaac_pose is None:
+        if viewpoint.world_pose is None:
             continue
-        matrices.append(np.asarray(viewpoint.isaac_pose, dtype=np.float64))
+        matrices.append(np.asarray(viewpoint.world_pose, dtype=np.float64))
         indices.append(idx)
 
     if matrices:
@@ -247,7 +249,8 @@ def assign_eaik_solutions(
 ) -> None:
     viewpoint_list = list(viewpoints)
     for viewpoint in viewpoint_list:
-        viewpoint.ik_solution = []
+        viewpoint.all_ik_solutions = []
+        viewpoint.safe_ik_solutions = []
 
     if eaik_results is None:
         return
@@ -273,7 +276,38 @@ def assign_eaik_solutions(
             continue
 
         solutions = [np.asarray(q, dtype=np.float64) for q in q_candidates]
-        viewpoint_list[viewpoint_idx].ik_solution = solutions
+        viewpoint_list[viewpoint_idx].all_ik_solutions = solutions
+
+
+def update_safe_ik_solutions(
+    viewpoints: Iterable[Viewpoint],
+    ik_solver: IKSolver,
+) -> List[np.ndarray]:
+    safe_targets: List[np.ndarray] = []
+    for viewpoint in viewpoints:
+        safe_solutions: List[np.ndarray] = []
+        for solution in viewpoint.all_ik_solutions:
+            q_candidate = np.asarray(solution, dtype=np.float64)
+            if collision_checking(ik_solver, q_candidate):
+                safe_solutions.append(q_candidate)
+                safe_targets.append(q_candidate)
+        viewpoint.safe_ik_solutions = safe_solutions
+    return safe_targets
+
+
+def log_viewpoint_ik_stats(viewpoints: Iterable[Viewpoint]) -> None:
+    viewpoint_list = list(viewpoints)
+    total = len(viewpoint_list)
+    if total == 0:
+        print("No sampled viewpoints available for statistics.")
+        return
+
+    solved = sum(1 for vp in viewpoint_list if len(vp.all_ik_solutions) > 0)
+    collision_free = sum(1 for vp in viewpoint_list if len(vp.safe_ik_solutions) > 0)
+    print(
+        "EAIK IK solutions: "
+        f"{solved}/{total} total, {collision_free}/{total} collision-free"
+    )
 
 
 def initialize_world():
@@ -375,6 +409,7 @@ def initialize_world():
 
     print("Object list:")
     print([x.name for x in obstacles.objects])
+    print("=" * 60 + "\n")
 
 
     ik_solver.update_world(obstacles)
@@ -455,7 +490,7 @@ def load_mesh():
             pose_matrix[:3, :3] = np.stack([x_axis, y_axis, z_axis], axis=1)
             pose_matrix[:3, 3] = position.astype(np.float64)
 
-            sampled_viewpoints.append(Viewpoint(index=int(point_idx), open3d_pose=pose_matrix))
+            sampled_viewpoints.append(Viewpoint(index=int(point_idx), local_pose=pose_matrix))
 
         SAMPLED_LOCAL_POINTS = offset_points
         SAMPLED_LOCAL_NORMALS = approach_normals
@@ -536,7 +571,7 @@ def load_pcd():
             pose_matrix[:3, :3] = np.stack([x_axis, y_axis, z_axis], axis=1)
             pose_matrix[:3, 3] = position.astype(np.float64)
 
-            sampled_viewpoints.append(Viewpoint(index=int(point_idx), open3d_pose=pose_matrix))
+            sampled_viewpoints.append(Viewpoint(index=int(point_idx), local_pose=pose_matrix))
 
         SAMPLED_LOCAL_POINTS = offset_points
         SAMPLED_LOCAL_NORMALS = approach_normals
@@ -751,33 +786,6 @@ def collision_checking(ik_solver: IKSolver, q_values) -> bool:
         feasible_tensor = feasible_tensor.cpu()
     return bool(feasible_tensor.flatten().bool().all().item())
 
-
-def select_joint_targets(ik_solver: IKSolver, ik_results) -> List[np.ndarray]:
-    targets: List[np.ndarray] = []
-    if not ik_results:
-        return targets
-
-    for result_idx, result in enumerate(ik_results):
-        q_list = getattr(result, "Q", None)
-        if q_list is None or len(q_list) == 0:
-            continue
-
-        candidate_indices = list(range(len(q_list)))
-
-        added = False
-        for candidate_idx in candidate_indices:
-            q_candidate = np.asarray(q_list[candidate_idx], dtype=np.float64)
-            if collision_checking(ik_solver, q_candidate):
-                targets.append(q_candidate)
-                added = True
-                break
-
-        if not added:
-            print(f"Pose {result_idx}: all IK solutions in collision")
-
-    return targets
-
-
 def set_robot_joint(robot, idx_list, joint_values) -> bool:
     if joint_values is None:
         return False
@@ -865,8 +873,6 @@ def main():
 
     # Also visualize sampled points if available
     if SAMPLED_LOCAL_POINTS is not None and SAMPLED_LOCAL_NORMALS is not None:
-        print("Visualizing sampled points...")
-
         update_viewpoints_world_pose(SAMPLED_VIEWPOINTS, glass_prim)
 
         world_mats, used_indices = collect_viewpoint_world_matrices(SAMPLED_VIEWPOINTS)
@@ -878,9 +884,21 @@ def main():
                 urdf_path="/isaac-sim/curobo/examples/lg_vision/simulation/helpers/ur20.urdf"
             )
 
+            assign_start = perf_counter()
             assign_eaik_solutions(SAMPLED_VIEWPOINTS, ik_results, used_indices)
+            assign_elapsed = perf_counter() - assign_start
 
-            ik_joint_targets = select_joint_targets(ik_solver, ik_results)
+            safe_start = perf_counter()
+            ik_joint_targets = update_safe_ik_solutions(SAMPLED_VIEWPOINTS, ik_solver)
+            safe_elapsed = perf_counter() - safe_start
+
+            print(
+                f"assign_eaik_solutions duration: {assign_elapsed * 1000.0:.2f} ms"
+            )
+            print(
+                f"update_safe_ik_solutions duration: {safe_elapsed * 1000.0:.2f} ms"
+            )
+            log_viewpoint_ik_stats(SAMPLED_VIEWPOINTS)
 
 
     step_counter = 0
