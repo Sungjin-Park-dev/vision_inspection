@@ -37,6 +37,8 @@ parser.add_argument(
     default=False,
 )
 parser.add_argument("--robot", type=str, default="ur20.yml", help="robot configuration to load")
+
+parser.add_argument("--number_of_points", type=int, default=10000, help="the number of sampled point cloud")
 args = parser.parse_args()
 
 ############################################################
@@ -56,8 +58,9 @@ simulation_app = SimulationApp(
 # import omni.replicator.core as rep
 # rep.settings.set_render_rtx_realtime(antialiasing="TAA")
 
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Deque, Dict, Iterable, List, Optional, Tuple
 
 # Third Party
 import carb
@@ -140,6 +143,7 @@ OPEN3D_TO_ISAAC_ROT = np.array(
     ],
     dtype=np.float64,
 )
+INTERPOLATION_STEPS = 60
 
 
 @dataclass
@@ -242,6 +246,28 @@ def collect_viewpoint_world_matrices(
     return stacked, indices
 
 
+def get_active_joint_positions(robot, idx_list: List[int]) -> np.ndarray:
+    all_positions = robot.get_joint_positions()
+    return np.asarray([all_positions[i] for i in idx_list], dtype=np.float64)
+
+
+def generate_interpolated_joint_path(
+    start: np.ndarray,
+    target: np.ndarray,
+    num_steps: int = INTERPOLATION_STEPS,
+) -> List[np.ndarray]:
+    start = np.asarray(start, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    if start.shape != target.shape:
+        raise ValueError("Start and target joint vectors must have the same shape")
+    if num_steps <= 0:
+        return [target]
+
+    alphas = np.linspace(0.0, 1.0, num_steps + 1, endpoint=True)[1:]
+    path = [start + alpha * (target - start) for alpha in alphas]
+    return path if path else [target]
+
+
 def assign_eaik_solutions(
     viewpoints: Iterable[Viewpoint],
     eaik_results,
@@ -329,13 +355,17 @@ def update_safe_ik_solutions(
     return
 
 
-def collect_safe_targets(viewpoints: Iterable[Viewpoint]) -> List[np.ndarray]:
-    safe_targets: List[np.ndarray] = []
+def collect_sorted_safe_targets(viewpoints: Iterable[Viewpoint]) -> List[np.ndarray]:
+    scored_targets: List[Tuple[float, np.ndarray]] = []
     for viewpoint in viewpoints:
         if not viewpoint.safe_ik_solutions:
             continue
-        safe_targets.append(viewpoint.safe_ik_solutions[0])
-    return safe_targets
+        solution = np.asarray(viewpoint.safe_ik_solutions[0], dtype=np.float64)
+        score = float(np.linalg.norm(solution))
+        scored_targets.append((score, solution))
+
+    scored_targets.sort(key=lambda item: item[0])
+    return [solution for _, solution in scored_targets]
 
 
 def log_viewpoint_ik_stats(viewpoints: Iterable[Viewpoint]) -> None:
@@ -473,7 +503,7 @@ def load_mesh():
     # o3d.visualization.draw_geometries([mesh])
 
     print("Converting mesh to point cloud using Poisson sampling...")
-    pcd_poisson = mesh.sample_points_poisson_disk(number_of_points=20000)
+    pcd_poisson = mesh.sample_points_poisson_disk(number_of_points=args.number_of_points)
 
     # Estimate normals for point cloud
     pcd_poisson.estimate_normals()
@@ -912,7 +942,9 @@ def main():
     my_world, glass_prim, robot, idx_list, ik_solver = initialize_world()
 
     ik_joint_targets: List[np.ndarray] = []
-    target_idx = 0
+    target_queue: Deque[np.ndarray] = deque()
+    active_trajectory: List[np.ndarray] = []
+    trajectory_step = 0
 
     # Also visualize sampled points if available
     if SAMPLED_LOCAL_POINTS is not None and SAMPLED_LOCAL_NORMALS is not None:
@@ -943,7 +975,9 @@ def main():
             )
             log_viewpoint_ik_stats(SAMPLED_VIEWPOINTS)
 
-            ik_joint_targets = collect_safe_targets(SAMPLED_VIEWPOINTS)
+            ik_joint_targets = collect_sorted_safe_targets(SAMPLED_VIEWPOINTS)
+            target_queue.clear()
+            target_queue.extend(ik_joint_targets)
 
 
     step_counter = 0
@@ -962,17 +996,33 @@ def main():
         idle_counter = 0
         step_counter += 1
 
-        if ik_joint_targets and step_counter % 100 == 0:
-            joint_cmd = ik_joint_targets[target_idx % len(ik_joint_targets)]
-            if set_robot_joint(robot, idx_list, joint_cmd):
-                target_idx = (target_idx + 1) % len(ik_joint_targets)
-        
-        # if ik_joint_targets and step_counter % 100 == 0:
-        #     joint_cmd = curobo_results.js_solution[target_idx % len(ik_joint_targets)].position
+        if active_trajectory and trajectory_step < len(active_trajectory):
+            joint_cmd = active_trajectory[trajectory_step]
+            robot.set_joint_positions(joint_cmd.tolist(), idx_list)
+            trajectory_step += 1
+            if trajectory_step >= len(active_trajectory):
+                active_trajectory.clear()
+                trajectory_step = 0
+        elif target_queue:
+            next_target = target_queue.popleft()
+            current_state = get_active_joint_positions(robot, idx_list)
+            active_trajectory = generate_interpolated_joint_path(
+                current_state,
+                next_target,
+                num_steps=INTERPOLATION_STEPS,
+            )
+            trajectory_step = 0
 
-        #     print(joint_cmd)
-        #     if set_robot_joint(robot, idx_list, joint_cmd):
-        #         target_idx = (target_idx + 1) % len(ik_joint_targets)
+            if not active_trajectory:
+                active_trajectory = [next_target]
+
+            joint_cmd = active_trajectory[trajectory_step]
+            robot.set_joint_positions(joint_cmd.tolist(), idx_list)
+            trajectory_step += 1
+            if trajectory_step >= len(active_trajectory):
+                active_trajectory.clear()
+                trajectory_step = 0
+
             
         # Update simulation step
         # my_world.current_time_step_index
