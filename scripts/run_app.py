@@ -131,14 +131,6 @@ CUROBO_TO_EAIK_TOOL = np.array(
 )
 
 NORMAL_SAMPLE_OFFSET = 0.1  # meters
-OPEN3D_TO_ISAAC_ROT = np.array(
-    [
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, -1.0],
-        [0.0, 1.0, 0.0],
-    ],
-    dtype=np.float64,
-)
 
 
 @dataclass
@@ -180,9 +172,15 @@ def open3d_to_isaac_coords(points: np.ndarray, normals: np.ndarray) -> Tuple[np.
     This function applies the necessary rotation to align the coordinate systems.
     """
     # Rotation matrix to convert Y-up to Z-up: rotate -90 degrees around X-axis
+    rotation_y_to_z = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 1.0, 0.0]
+    ], dtype=np.float64)
+
     # Apply rotation to points and normals
-    isaac_points = (OPEN3D_TO_ISAAC_ROT @ points.T).T
-    isaac_normals = normalize_vectors((OPEN3D_TO_ISAAC_ROT @ normals.T).T)
+    isaac_points = (rotation_y_to_z @ points.T).T
+    isaac_normals = normalize_vectors((rotation_y_to_z @ normals.T).T)
 
     return isaac_points, isaac_normals
 
@@ -364,13 +362,7 @@ def load_mesh():
             pose_matrix[:3, :3] = np.stack([x_axis, y_axis, z_axis], axis=1)
             pose_matrix[:3, 3] = position.astype(np.float64)
 
-            sampled_viewpoints.append(
-                Viewpoint(
-                    index=int(point_idx),
-                    open3d_pose=pose_matrix,
-                    isaac_pose=open3d_pose_to_isaac(pose_matrix),
-                )
-            )
+            sampled_viewpoints.append(Viewpoint(index=int(point_idx), open3d_pose=pose_matrix))
 
         SAMPLED_LOCAL_POINTS = offset_points
         SAMPLED_LOCAL_NORMALS = approach_normals
@@ -451,13 +443,7 @@ def load_pcd():
             pose_matrix[:3, :3] = np.stack([x_axis, y_axis, z_axis], axis=1)
             pose_matrix[:3, 3] = position.astype(np.float64)
 
-            sampled_viewpoints.append(
-                Viewpoint(
-                    index=int(point_idx),
-                    open3d_pose=pose_matrix,
-                    isaac_pose=open3d_pose_to_isaac(pose_matrix),
-                )
-            )
+            sampled_viewpoints.append(Viewpoint(index=int(point_idx), open3d_pose=pose_matrix))
 
         SAMPLED_LOCAL_POINTS = offset_points
         SAMPLED_LOCAL_NORMALS = approach_normals
@@ -861,11 +847,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-def open3d_pose_to_isaac(pose_matrix: np.ndarray) -> np.ndarray:
-    if pose_matrix.shape != (4, 4):
-        raise ValueError("Pose matrix must be 4x4")
-
-    isaac_pose = np.eye(4, dtype=np.float64)
-    isaac_pose[:3, :3] = OPEN3D_TO_ISAAC_ROT @ pose_matrix[:3, :3]
-    isaac_pose[:3, 3] = OPEN3D_TO_ISAAC_ROT @ pose_matrix[:3, 3]
-    return isaac_pose
