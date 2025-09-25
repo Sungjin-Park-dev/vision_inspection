@@ -282,16 +282,59 @@ def assign_eaik_solutions(
 def update_safe_ik_solutions(
     viewpoints: Iterable[Viewpoint],
     ik_solver: IKSolver,
-) -> List[np.ndarray]:
+) -> None:
+    viewpoint_list = list(viewpoints)
+    for viewpoint in viewpoint_list:
+        viewpoint.safe_ik_solutions = []
+
+    batched_q: List[np.ndarray] = []
+    index_map: List[Tuple[int, int]] = []
+
+    for vp_idx, viewpoint in enumerate(viewpoint_list):
+        for sol_idx, solution in enumerate(viewpoint.all_ik_solutions):
+            batched_q.append(np.asarray(solution, dtype=np.float64))
+            index_map.append((vp_idx, sol_idx))
+
+    if not batched_q:
+        return
+
+    batched_array = np.stack(batched_q, axis=0)
+    tensor_args = getattr(ik_solver, "tensor_args", TensorDeviceType())
+    q_tensor = tensor_args.to_device(torch.from_numpy(batched_array))
+
+    zeros = torch.zeros_like(q_tensor)
+    joint_state = JointState(
+        position=q_tensor,
+        velocity=zeros,
+        acceleration=zeros,
+        jerk=zeros,
+        joint_names=ik_solver.kinematics.joint_names,
+    )
+
+    metrics = ik_solver.check_constraints(joint_state)
+    feasible = getattr(metrics, "feasible", None)
+    if feasible is None:
+        feasibility = torch.ones(len(index_map), dtype=torch.bool)
+    else:
+        feasibility = feasible.detach()
+        if feasibility.is_cuda:
+            feasibility = feasibility.cpu()
+        feasibility = feasibility.flatten().to(dtype=torch.bool)
+
+    for batch_idx, ((vp_idx, _), is_feasible) in enumerate(zip(index_map, feasibility)):
+        if not bool(is_feasible):
+            continue
+        solution = batched_q[batch_idx]
+        viewpoint_list[vp_idx].safe_ik_solutions.append(solution)
+    return
+
+
+def collect_safe_targets(viewpoints: Iterable[Viewpoint]) -> List[np.ndarray]:
     safe_targets: List[np.ndarray] = []
     for viewpoint in viewpoints:
-        safe_solutions: List[np.ndarray] = []
-        for solution in viewpoint.all_ik_solutions:
-            q_candidate = np.asarray(solution, dtype=np.float64)
-            if collision_checking(ik_solver, q_candidate):
-                safe_solutions.append(q_candidate)
-                safe_targets.append(q_candidate)
-        viewpoint.safe_ik_solutions = safe_solutions
+        if not viewpoint.safe_ik_solutions:
+            continue
+        safe_targets.append(viewpoint.safe_ik_solutions[0])
     return safe_targets
 
 
@@ -889,7 +932,7 @@ def main():
             assign_elapsed = perf_counter() - assign_start
 
             safe_start = perf_counter()
-            ik_joint_targets = update_safe_ik_solutions(SAMPLED_VIEWPOINTS, ik_solver)
+            update_safe_ik_solutions(SAMPLED_VIEWPOINTS, ik_solver)
             safe_elapsed = perf_counter() - safe_start
 
             print(
@@ -899,6 +942,8 @@ def main():
                 f"update_safe_ik_solutions duration: {safe_elapsed * 1000.0:.2f} ms"
             )
             log_viewpoint_ik_stats(SAMPLED_VIEWPOINTS)
+
+            ik_joint_targets = collect_safe_targets(SAMPLED_VIEWPOINTS)
 
 
     step_counter = 0
