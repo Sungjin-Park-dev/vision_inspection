@@ -131,6 +131,14 @@ CUROBO_TO_EAIK_TOOL = np.array(
 )
 
 NORMAL_SAMPLE_OFFSET = 0.1  # meters
+OPEN3D_TO_ISAAC_ROT = np.array(
+    [
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 1.0, 0.0],
+    ],
+    dtype=np.float64,
+)
 
 
 @dataclass
@@ -171,18 +179,101 @@ def open3d_to_isaac_coords(points: np.ndarray, normals: np.ndarray) -> Tuple[np.
     Open3D typically uses Y-up coordinate system while Isaac Sim uses Z-up.
     This function applies the necessary rotation to align the coordinate systems.
     """
-    # Rotation matrix to convert Y-up to Z-up: rotate -90 degrees around X-axis
-    rotation_y_to_z = np.array([
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, -1.0],
-        [0.0, 1.0, 0.0]
-    ], dtype=np.float64)
-
     # Apply rotation to points and normals
-    isaac_points = (rotation_y_to_z @ points.T).T
-    isaac_normals = normalize_vectors((rotation_y_to_z @ normals.T).T)
+    isaac_points = (OPEN3D_TO_ISAAC_ROT @ points.T).T
+    isaac_normals = normalize_vectors((OPEN3D_TO_ISAAC_ROT @ normals.T).T)
 
     return isaac_points, isaac_normals
+
+
+def open3d_pose_to_world(pose_matrix: np.ndarray, reference_prim: XFormPrim) -> np.ndarray:
+    if pose_matrix.shape != (4, 4):
+        raise ValueError("Pose matrix must be 4x4")
+    if reference_prim is None:
+        raise ValueError("reference_prim is required to map pose into world coordinates")
+
+    world_position, world_orientation = reference_prim.get_world_pose()
+    local_scale = np.asarray(reference_prim.get_local_scale(), dtype=np.float64)
+    rotation_matrix = quat_to_rot_matrix(np.asarray(world_orientation, dtype=np.float64))
+
+    local_rot = OPEN3D_TO_ISAAC_ROT @ pose_matrix[:3, :3]
+    local_pos = OPEN3D_TO_ISAAC_ROT @ pose_matrix[:3, 3]
+
+    scaled_pos = local_pos * local_scale
+    rotated_pos = rotation_matrix @ scaled_pos
+    world_pos = rotated_pos + np.asarray(world_position, dtype=np.float64)
+
+    world_rot = rotation_matrix @ local_rot
+
+    world_pose = np.eye(4, dtype=np.float64)
+    world_pose[:3, :3] = world_rot
+    world_pose[:3, 3] = world_pos
+    return world_pose
+
+
+def update_viewpoints_world_pose(viewpoints: Iterable[Viewpoint], reference_prim: Optional[XFormPrim]) -> None:
+    if reference_prim is None:
+        return
+    for viewpoint in viewpoints:
+        if viewpoint.open3d_pose is None:
+            continue
+        viewpoint.isaac_pose = open3d_pose_to_world(viewpoint.open3d_pose, reference_prim)
+
+
+def collect_viewpoint_world_matrices(
+    viewpoints: Iterable[Viewpoint],
+) -> Tuple[np.ndarray, List[int]]:
+    matrices: List[np.ndarray] = []
+    indices: List[int] = []
+
+    for idx, viewpoint in enumerate(viewpoints):
+        if viewpoint.isaac_pose is None:
+            continue
+        matrices.append(np.asarray(viewpoint.isaac_pose, dtype=np.float64))
+        indices.append(idx)
+
+    if matrices:
+        stacked = np.stack(matrices, axis=0)
+    else:
+        stacked = np.empty((0, 4, 4), dtype=np.float64)
+
+    return stacked, indices
+
+
+def assign_eaik_solutions(
+    viewpoints: Iterable[Viewpoint],
+    eaik_results,
+    indices: Optional[List[int]] = None,
+) -> None:
+    viewpoint_list = list(viewpoints)
+    for viewpoint in viewpoint_list:
+        viewpoint.ik_solution = []
+
+    if eaik_results is None:
+        return
+
+    try:
+        eaik_list = list(eaik_results)
+    except TypeError:
+        eaik_list = [eaik_results]
+
+    if indices is None:
+        indices = list(range(len(viewpoint_list)))
+
+    max_assignable = min(len(indices), len(eaik_list))
+
+    for result_idx in range(max_assignable):
+        viewpoint_idx = indices[result_idx]
+        result = eaik_list[result_idx]
+        if result is None:
+            continue
+
+        q_candidates = getattr(result, "Q", None)
+        if q_candidates is None or len(q_candidates) == 0:
+            continue
+
+        solutions = [np.asarray(q, dtype=np.float64) for q in q_candidates]
+        viewpoint_list[viewpoint_idx].ik_solution = solutions
 
 
 def initialize_world():
@@ -281,6 +372,8 @@ def initialize_world():
             "/World/mount",
         ],
     ).get_collision_check_world()
+
+    print("Object list:")
     print([x.name for x in obstacles.objects])
 
 
@@ -402,7 +495,7 @@ def load_pcd():
     normals = np.asarray(pcd_poisson.normals)
 
     # valid_indices = [idx for idx in range(len(points))]
-    valid_indices = [idx for idx in range(10)]
+    valid_indices = [idx for idx in range(len(points))]
 
     sample_indices = np.asarray(valid_indices, dtype=np.int64)
 
@@ -770,45 +863,24 @@ def main():
     ik_joint_targets: List[np.ndarray] = []
     target_idx = 0
 
-    # Convert all points with debug information
-    world_points, world_normals = convert_points(
-        o3d_points, o3d_normals, glass_prim, debug=True
-    )
-
     # Also visualize sampled points if available
     if SAMPLED_LOCAL_POINTS is not None and SAMPLED_LOCAL_NORMALS is not None:
         print("Visualizing sampled points...")
-        sampled_world_points, sampled_world_normals = convert_points(
-            SAMPLED_LOCAL_POINTS, SAMPLED_LOCAL_NORMALS, glass_prim, debug=True
-        )
-        # visualize_sampled_points_in_isaac(
-        #     sampled_world_points, sampled_world_normals,
-        #     color=(1.0, 0.0, 0.0),  # Red for offset sample targets
-        #     normal_scale=0.05
-        # )
 
-        sampled_world_normals_quat = normals_to_quats(
-            sampled_world_normals, tensor_args=tensor_args
-        )
+        update_viewpoints_world_pose(SAMPLED_VIEWPOINTS, glass_prim)
 
-        pos_dtype = np.float32 if tensor_args.dtype == torch.float32 else np.float64
-        pos_all = tensor_args.to_device(
-            torch.from_numpy(sampled_world_points.astype(pos_dtype, copy=False))
-        ).contiguous()
-        quat_all = sampled_world_normals_quat.contiguous()
-        poses = Pose(position=pos_all, quaternion=quat_all)
+        world_mats, used_indices = collect_viewpoint_world_matrices(SAMPLED_VIEWPOINTS)
+        if world_mats.size == 0:
+            print("Warning: No valid world poses found for sampled viewpoints")
+        else:
+            ik_results = compute_ik(
+                mats=world_mats,
+                urdf_path="/isaac-sim/curobo/examples/lg_vision/simulation/helpers/ur20.urdf"
+            )
 
-        print(poses)
+            assign_eaik_solutions(SAMPLED_VIEWPOINTS, ik_results, used_indices)
 
-        mats = pose_to_matrix(pos_all, quat_all)
-        print(mats)
-
-        ik_results = compute_ik(
-            mats=mats,
-            urdf_path="/isaac-sim/curobo/examples/lg_vision/simulation/helpers/ur20.urdf"
-        )
-
-        ik_joint_targets = select_joint_targets(ik_solver, ik_results)
+            ik_joint_targets = select_joint_targets(ik_solver, ik_results)
 
 
     step_counter = 0
