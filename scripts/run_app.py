@@ -55,7 +55,8 @@ simulation_app = SimulationApp(
 # import omni.replicator.core as rep
 # rep.settings.set_render_rtx_realtime(antialiasing="TAA")
 
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, List, Optional, Tuple
 
 # Third Party
 import carb
@@ -130,7 +131,30 @@ CUROBO_TO_EAIK_TOOL = np.array(
 )
 
 NORMAL_SAMPLE_OFFSET = 0.1  # meters
+OPEN3D_TO_ISAAC_ROT = np.array(
+    [
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 1.0, 0.0],
+    ],
+    dtype=np.float64,
+)
 
+
+@dataclass
+class Viewpoint:
+    index: int
+    open3d_pose: Optional[np.ndarray] = None
+    isaac_pose: Optional[np.ndarray] = None
+    ik_solution: List[np.ndarray] = field(default_factory=list)
+
+
+class ViewpointList:
+    def __init__(self, viewpoints: Optional[Iterable[Viewpoint]] = None) -> None:
+        self.viewpoints: List[Viewpoint] = list(viewpoints) if viewpoints else []
+
+
+SAMPLED_VIEWPOINTS: List[Viewpoint] = []
 
 def normalize_vectors(vectors: np.ndarray) -> np.ndarray:
     if vectors.size == 0:
@@ -156,15 +180,9 @@ def open3d_to_isaac_coords(points: np.ndarray, normals: np.ndarray) -> Tuple[np.
     This function applies the necessary rotation to align the coordinate systems.
     """
     # Rotation matrix to convert Y-up to Z-up: rotate -90 degrees around X-axis
-    rotation_y_to_z = np.array([
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, -1.0],
-        [0.0, 1.0, 0.0]
-    ], dtype=np.float64)
-
     # Apply rotation to points and normals
-    isaac_points = (rotation_y_to_z @ points.T).T
-    isaac_normals = normalize_vectors((rotation_y_to_z @ normals.T).T)
+    isaac_points = (OPEN3D_TO_ISAAC_ROT @ points.T).T
+    isaac_normals = normalize_vectors((OPEN3D_TO_ISAAC_ROT @ normals.T).T)
 
     return isaac_points, isaac_normals
 
@@ -275,6 +293,9 @@ def initialize_world():
 
 def load_mesh():
     import open3d as o3d
+    global SAMPLED_LOCAL_POINTS, SAMPLED_LOCAL_NORMALS, SAMPLED_VIEWPOINTS
+
+    SAMPLED_VIEWPOINTS = []
     test_obj_path = "/isaac-sim/curobo/vision_inspection/data/input/glass_o3d.obj"
     mesh = o3d.io.read_triangle_mesh(test_obj_path)
     mesh.compute_vertex_normals()
@@ -321,15 +342,52 @@ def load_mesh():
         print("Visualizing preset point samples in Open3D alongside the full cloud...")
         o3d.visualization.draw_geometries([pcd_poisson, sampled_cloud])
 
-        global SAMPLED_LOCAL_POINTS, SAMPLED_LOCAL_NORMALS
+        helper_z = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        helper_y = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        sampled_viewpoints: List[Viewpoint] = []
+
+        for point_idx, position, normal in zip(sample_indices, offset_points, approach_normals):
+            z_axis = normal / np.linalg.norm(normal)
+            helper = helper_z if np.abs(np.dot(z_axis, helper_z)) <= 0.99 else helper_y
+            x_axis = np.cross(helper, z_axis)
+            norm_x = np.linalg.norm(x_axis)
+            if norm_x < 1e-6:
+                helper = helper_y if np.abs(np.dot(z_axis, helper_z)) > 0.99 else helper_z
+                x_axis = np.cross(helper, z_axis)
+                norm_x = np.linalg.norm(x_axis)
+                if norm_x < 1e-6:
+                    raise ValueError("Failed to construct orthogonal frame from normal vector")
+            x_axis /= norm_x
+            y_axis = np.cross(z_axis, x_axis)
+
+            pose_matrix = np.eye(4, dtype=np.float64)
+            pose_matrix[:3, :3] = np.stack([x_axis, y_axis, z_axis], axis=1)
+            pose_matrix[:3, 3] = position.astype(np.float64)
+
+            sampled_viewpoints.append(
+                Viewpoint(
+                    index=int(point_idx),
+                    open3d_pose=pose_matrix,
+                    isaac_pose=open3d_pose_to_isaac(pose_matrix),
+                )
+            )
+
         SAMPLED_LOCAL_POINTS = offset_points
         SAMPLED_LOCAL_NORMALS = approach_normals
+        SAMPLED_VIEWPOINTS = sampled_viewpoints
+    else:
+        SAMPLED_LOCAL_POINTS = None
+        SAMPLED_LOCAL_NORMALS = None
+        SAMPLED_VIEWPOINTS = []
 
     return points, normals
 
 
 def load_pcd():
     import open3d as o3d
+    global SAMPLED_LOCAL_POINTS, SAMPLED_LOCAL_NORMALS, SAMPLED_VIEWPOINTS
+
+    SAMPLED_VIEWPOINTS = []
     pcd_path = "/isaac-sim/curobo/vision_inspection/data/input/glass_pointcloud.pcd"
 
     print(f"Loading point cloud from: {pcd_path}")
@@ -351,7 +409,9 @@ def load_pcd():
     points = np.asarray(pcd_poisson.points)
     normals = np.asarray(pcd_poisson.normals)
 
-    valid_indices = [idx for idx in range(len(points))]
+    # valid_indices = [idx for idx in range(len(points))]
+    valid_indices = [idx for idx in range(10)]
+
     sample_indices = np.asarray(valid_indices, dtype=np.int64)
 
     if sample_indices.size > 0:
@@ -369,9 +429,42 @@ def load_pcd():
         print("Visualizing preset point samples in Open3D alongside the full cloud...")
         o3d.visualization.draw_geometries([pcd_poisson, sampled_cloud])
 
-        global SAMPLED_LOCAL_POINTS, SAMPLED_LOCAL_NORMALS
+        helper_z = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        helper_y = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        sampled_viewpoints: List[Viewpoint] = []
+
+        for point_idx, position, normal in zip(sample_indices, offset_points, approach_normals):
+            z_axis = normal / np.linalg.norm(normal)
+            helper = helper_z if np.abs(np.dot(z_axis, helper_z)) <= 0.99 else helper_y
+            x_axis = np.cross(helper, z_axis)
+            norm_x = np.linalg.norm(x_axis)
+            if norm_x < 1e-6:
+                helper = helper_y if np.abs(np.dot(z_axis, helper_z)) > 0.99 else helper_z
+                x_axis = np.cross(helper, z_axis)
+                norm_x = np.linalg.norm(x_axis)
+                if norm_x < 1e-6:
+                    raise ValueError("Failed to construct orthogonal frame from normal vector")
+            x_axis /= norm_x
+            y_axis = np.cross(z_axis, x_axis)
+
+            pose_matrix = np.eye(4, dtype=np.float64)
+            pose_matrix[:3, :3] = np.stack([x_axis, y_axis, z_axis], axis=1)
+            pose_matrix[:3, 3] = position.astype(np.float64)
+
+            sampled_viewpoints.append(
+                Viewpoint(
+                    index=int(point_idx),
+                    open3d_pose=pose_matrix,
+                    isaac_pose=open3d_pose_to_isaac(pose_matrix),
+                )
+            )
+
         SAMPLED_LOCAL_POINTS = offset_points
         SAMPLED_LOCAL_NORMALS = approach_normals
+        SAMPLED_VIEWPOINTS = sampled_viewpoints
+    else:
+        SAMPLED_LOCAL_POINTS = None
+        SAMPLED_LOCAL_NORMALS = None
 
     return points, normals
 
@@ -768,3 +861,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+def open3d_pose_to_isaac(pose_matrix: np.ndarray) -> np.ndarray:
+    if pose_matrix.shape != (4, 4):
+        raise ValueError("Pose matrix must be 4x4")
+
+    isaac_pose = np.eye(4, dtype=np.float64)
+    isaac_pose[:3, :3] = OPEN3D_TO_ISAAC_ROT @ pose_matrix[:3, :3]
+    isaac_pose[:3, 3] = OPEN3D_TO_ISAAC_ROT @ pose_matrix[:3, 3]
+    return isaac_pose
