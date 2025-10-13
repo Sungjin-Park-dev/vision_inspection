@@ -355,7 +355,7 @@ def update_safe_ik_solutions(
     return
 
 
-def collect_sorted_safe_targets(viewpoints: Iterable[Viewpoint]) -> List[np.ndarray]:
+def collect_sorted_joint_safe_targets(viewpoints: Iterable[Viewpoint]) -> List[np.ndarray]:
     scored_targets: List[Tuple[float, np.ndarray]] = []
     for viewpoint in viewpoints:
         if not viewpoint.safe_ik_solutions:
@@ -975,7 +975,7 @@ def main():
             )
             log_viewpoint_ik_stats(SAMPLED_VIEWPOINTS)
 
-            ik_joint_targets = collect_sorted_safe_targets(SAMPLED_VIEWPOINTS)
+            ik_joint_targets = collect_sorted_joint_safe_targets(SAMPLED_VIEWPOINTS)
             target_queue.clear()
             target_queue.extend(ik_joint_targets)
 
