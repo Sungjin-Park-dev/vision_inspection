@@ -1051,6 +1051,18 @@ def initialize_world():
         position=np.array([0.7, 0.0, 0.6]),
     )
 
+    # Print glass object transform for unit verification
+    glass_world_pos, glass_world_rot = glass_prim.get_world_pose()
+    glass_local_scale = glass_prim.get_local_scale()
+    print(f"\n{'='*60}")
+    print("GLASS OBJECT TRANSFORM (Isaac Sim)")
+    print(f"{'='*60}")
+    print(f"World position: {glass_world_pos} (meters)")
+    print(f"World rotation (quat): {glass_world_rot}")
+    print(f"Local scale: {glass_local_scale}")
+    print(f"Note: Isaac Sim uses meters (stage_units_in_meters=1.0)")
+    print(f"{'='*60}\n")
+
     glass_material = OmniGlass(
         prim_path="/World/Looks/glass_mat",
         color=np.array([0.7, 0.85, 0.9]),
@@ -1170,10 +1182,31 @@ def load_tsp_tour_points_and_normals(tsp_result: dict) -> Tuple[np.ndarray, np.n
     print(f"  Z: [{tour_coords[:, 2].min():.4f}, {tour_coords[:, 2].max():.4f}]")
     print(f"{'='*60}\n")
 
-    # Generate viewpoints in TSP order (same logic as load_mesh/load_pcd)
-    # Apply offset along normals
+    # Determine working distance for viewpoint offset
+    # Priority: 1. Camera spec from HDF5, 2. Default NORMAL_SAMPLE_OFFSET
+    working_distance_m = NORMAL_SAMPLE_OFFSET  # Default: 0.1m (100mm)
+
+    # Check if TSP result has camera_spec metadata (from mesh_to_viewpoints.py)
+    if 'metadata' in tsp_result and 'camera_spec' in tsp_result['metadata']:
+        camera_spec = tsp_result['metadata']['camera_spec']
+        if 'working_distance_mm' in camera_spec:
+            working_distance_m = camera_spec['working_distance_mm'] / 1000.0
+            print(f"Using working distance from HDF5 camera_spec: {camera_spec['working_distance_mm']} mm = {working_distance_m} m")
+        else:
+            print(f"⚠️  WARNING: camera_spec found but no working_distance_mm, using default {NORMAL_SAMPLE_OFFSET} m")
+    else:
+        print(f"No camera_spec in HDF5, using default working distance: {NORMAL_SAMPLE_OFFSET} m (100mm)")
+        print(f"⚠️  For FOV-based viewpoints, this may not match the intended working distance!")
+
+    # Generate viewpoints in TSP order
+    # tour_coords = surface positions (stored by mesh_to_tsp.py)
+    # We need to offset them to get camera positions for IK solving
+    print(f"\nGenerating viewpoint poses from surface positions...")
+    print(f"  Surface positions: {len(tour_coords)} points")
+    print(f"  Offsetting by {working_distance_m*1000:.1f} mm along surface normals")
+
     offset_points = offset_points_along_normals(
-        tour_coords, tour_normals, NORMAL_SAMPLE_OFFSET
+        tour_coords, tour_normals, working_distance_m
     )
     approach_normals = -normalize_vectors(tour_normals)
 

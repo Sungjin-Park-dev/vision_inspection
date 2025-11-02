@@ -24,6 +24,7 @@ def save_tsp_result(
     glop_cost: float,
     revision_lens: list,
     revision_iters: list,
+    camera_spec: Optional[dict] = None,
 ) -> None:
     """
     Save TSP result to an HDF5 file
@@ -78,6 +79,12 @@ def save_tsp_result(
         metadata_grp.attrs['timestamp'] = datetime.now().isoformat()
         metadata_grp.attrs['revision_lens'] = np.array(revision_lens, dtype=np.int32)
         metadata_grp.attrs['revision_iters'] = np.array(revision_iters, dtype=np.int32)
+
+        # Save camera spec if provided (from viewpoints file)
+        if camera_spec is not None:
+            camera_grp = metadata_grp.create_group('camera_spec')
+            for key, value in camera_spec.items():
+                camera_grp.attrs[key] = value
 
         # Save points datasets
         points_grp.create_dataset('original', data=points_original.astype(np.float32))
@@ -136,6 +143,11 @@ def load_tsp_result(file_path: str) -> Dict[str, Any]:
             'revision_iters': metadata_grp.attrs['revision_iters'].tolist(),
         }
 
+        # Load camera spec if present (from viewpoints file)
+        if 'camera_spec' in metadata_grp:
+            camera_grp = metadata_grp['camera_spec']
+            metadata['camera_spec'] = {key: camera_grp.attrs[key] for key in camera_grp.attrs}
+
         # Load points
         points_grp = f['points']
         points = {
@@ -178,6 +190,20 @@ def load_tsp_result(file_path: str) -> Dict[str, Any]:
     print(f"GLOP Cost: {tsp_result['metadata']['glop_cost']:.6f}")
     print(f"Improvement: {tsp_result['metadata']['improvement']:.2f}%")
     print(f"Timestamp: {tsp_result['metadata']['timestamp']}")
+
+    # Show camera spec if available
+    if 'camera_spec' in tsp_result['metadata']:
+        camera_spec = tsp_result['metadata']['camera_spec']
+        print(f"\nCamera Spec:")
+        if 'working_distance_mm' in camera_spec:
+            print(f"  Working distance: {camera_spec['working_distance_mm']} mm")
+        if 'fov_width_mm' in camera_spec and 'fov_height_mm' in camera_spec:
+            print(f"  FOV: {camera_spec['fov_width_mm']} x {camera_spec['fov_height_mm']} mm")
+        if 'depth_of_field_mm' in camera_spec:
+            print(f"  Depth of field: {camera_spec['depth_of_field_mm']} mm")
+    else:
+        print(f"\n⚠️  No camera_spec found (viewpoints may use default offset)")
+
     print(f"{'='*60}\n")
 
     return tsp_result
@@ -296,3 +322,124 @@ def denormalize_coordinates(
     min_coords = normalization_info["min"]
     max_coords = normalization_info["max"]
     return normalized_coords * (max_coords - min_coords) + min_coords
+
+
+def save_viewpoints(
+    file_path: str,
+    points: np.ndarray,
+    normals: np.ndarray,
+    mesh_file: str,
+    camera_spec: Optional[dict] = None,
+) -> None:
+    """
+    Save viewpoints to an HDF5 file (simplified format without TSP tour)
+
+    This format is designed to be loaded by mesh_to_tsp.py with --use_viewpoints flag.
+
+    Args:
+        file_path: Path to save the HDF5 file (use .h5 extension)
+        points: (N, 3) array of viewpoint coordinates (Open3D coordinate system)
+        normals: (N, 3) array of camera direction vectors (Open3D coordinate system)
+        mesh_file: Path to the original mesh file
+        camera_spec: Optional dict with camera specifications (FOV, WD, DOF, etc.)
+    """
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    # Save to HDF5 file
+    with h5py.File(file_path, 'w') as f:
+        # Create groups
+        metadata_grp = f.create_group('metadata')
+        viewpoints_grp = f.create_group('viewpoints')
+
+        # Save metadata as attributes
+        metadata_grp.attrs['num_viewpoints'] = len(points)
+        metadata_grp.attrs['mesh_file'] = mesh_file
+        metadata_grp.attrs['timestamp'] = datetime.now().isoformat()
+        metadata_grp.attrs['format'] = 'viewpoints_only'  # Marker for identification
+
+        # Save camera spec if provided
+        if camera_spec is not None:
+            camera_grp = metadata_grp.create_group('camera_spec')
+            for key, value in camera_spec.items():
+                camera_grp.attrs[key] = value
+
+        # Save viewpoints datasets
+        viewpoints_grp.create_dataset('positions', data=points.astype(np.float32))
+        viewpoints_grp.create_dataset('normals', data=normals.astype(np.float32))
+
+    print(f"\n{'='*60}")
+    print("Viewpoints Saved Successfully (HDF5 format)")
+    print(f"{'='*60}")
+    print(f"File: {file_path}")
+    print(f"Size: {os.path.getsize(file_path) / 1024:.2f} KB")
+    print(f"Viewpoints: {len(points)}")
+    print(f"Format: Simplified (points + normals only)")
+    print(f"{'='*60}\n")
+
+
+def load_viewpoints(file_path: str) -> Tuple[np.ndarray, np.ndarray, dict]:
+    """
+    Load viewpoints from an HDF5 file
+
+    Args:
+        file_path: Path to the HDF5 file
+
+    Returns:
+        Tuple of (points, normals, metadata)
+        - points: (N, 3) array of viewpoint coordinates
+        - normals: (N, 3) array of camera direction vectors
+        - metadata: dict with metadata
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        ValueError: If file format is invalid
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Viewpoints file not found: {file_path}")
+
+    # Load from HDF5 file
+    with h5py.File(file_path, 'r') as f:
+        # Check format
+        if 'metadata' not in f or 'viewpoints' not in f:
+            raise ValueError("Invalid viewpoints file format")
+
+        metadata_grp = f['metadata']
+        if 'format' not in metadata_grp.attrs or metadata_grp.attrs['format'] != 'viewpoints_only':
+            raise ValueError("File is not in viewpoints_only format")
+
+        # Load metadata
+        metadata = {
+            'num_viewpoints': int(metadata_grp.attrs['num_viewpoints']),
+            'mesh_file': str(metadata_grp.attrs['mesh_file']),
+            'timestamp': str(metadata_grp.attrs['timestamp']),
+        }
+
+        # Load camera spec if present
+        if 'camera_spec' in metadata_grp:
+            camera_grp = metadata_grp['camera_spec']
+            metadata['camera_spec'] = {key: camera_grp.attrs[key] for key in camera_grp.attrs}
+
+        # Load viewpoints
+        viewpoints_grp = f['viewpoints']
+        points = np.array(viewpoints_grp['positions'])
+        normals = np.array(viewpoints_grp['normals'])
+
+    # Validate dimensions
+    if points.shape[1] != 3:
+        raise ValueError(f"Invalid points shape: {points.shape}, expected (N, 3)")
+    if normals.shape != points.shape:
+        raise ValueError(f"Normals shape {normals.shape} doesn't match points shape {points.shape}")
+
+    print(f"\n{'='*60}")
+    print("Viewpoints Loaded Successfully (HDF5 format)")
+    print(f"{'='*60}")
+    print(f"File: {file_path}")
+    print(f"Viewpoints: {len(points)}")
+    print(f"Mesh: {metadata['mesh_file']}")
+    print(f"Timestamp: {metadata['timestamp']}")
+    if 'camera_spec' in metadata:
+        print(f"Camera FOV: {metadata['camera_spec'].get('fov_width_mm', 'N/A')} x {metadata['camera_spec'].get('fov_height_mm', 'N/A')} mm")
+    print(f"{'='*60}\n")
+
+    return points, normals, metadata

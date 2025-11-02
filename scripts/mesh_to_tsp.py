@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import open3d as o3d
 
 # Import TSP utilities for saving/loading results
-from tsp_utils import save_tsp_result
+from tsp_utils import save_tsp_result, load_viewpoints
 
 
 def read_pcd_file_simple(file_path: str) -> Tuple[np.ndarray, np.ndarray]:
@@ -629,6 +629,134 @@ def solve_tsp_with_heuristics_and_2opt(
 
 
 
+def visualize_viewpoints_only(
+    points: np.ndarray,
+    normals: np.ndarray,
+    use_open3d: bool = True,
+    use_matplotlib: bool = False,
+    output_path: str = "viewpoints_visualization.png"
+):
+    """
+    Visualize viewpoints and their normals without TSP tour
+
+    Args:
+        points: (N, 3) array of viewpoint positions
+        normals: (N, 3) array of camera direction vectors
+        use_open3d: If True, show interactive Open3D viewer
+        use_matplotlib: If True, save matplotlib visualization
+        output_path: Path for matplotlib output
+    """
+    print(f"\n{'='*60}")
+    print(f"Visualizing {len(points)} viewpoints")
+    print(f"{'='*60}")
+
+    # Open3D visualization (interactive)
+    if use_open3d:
+        # Create point cloud for viewpoint positions
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        pcd.paint_uniform_color([0.0, 1.0, 0.0])  # Green for viewpoints
+
+        # Create line set for normals (arrows)
+        arrow_length = 0.01  # 10mm arrows
+        line_points = []
+        line_indices = []
+        line_colors = []
+
+        for i, (pt, normal) in enumerate(zip(points, normals)):
+            start_idx = len(line_points)
+            line_points.append(pt)
+            line_points.append(pt + normal * arrow_length)
+            line_indices.append([start_idx, start_idx + 1])
+            line_colors.append([1.0, 0.0, 0.0])  # Red for normals
+
+        line_set = o3d.geometry.LineSet()
+        line_set.points = o3d.utility.Vector3dVector(line_points)
+        line_set.lines = o3d.utility.Vector2iVector(line_indices)
+        line_set.colors = o3d.utility.Vector3dVector(line_colors)
+
+        print("\nOpen3D Visualization:")
+        print("  Green points: Viewpoint positions")
+        print("  Red arrows: Camera viewing directions (normals)")
+        print("  Use mouse to rotate, zoom, and pan")
+
+        o3d.visualization.draw_geometries(
+            [pcd, line_set],
+            window_name=f"Viewpoints ({len(points)} points)",
+            width=1280,
+            height=720
+        )
+
+    # Matplotlib visualization (static image)
+    if use_matplotlib:
+        fig = plt.figure(figsize=(16, 12))
+
+        # Create 4 different views
+        views = [
+            (1, 'XY View (Top)', 0, 90),      # Top view
+            (2, 'XZ View (Front)', 0, 0),     # Front view
+            (3, 'YZ View (Side)', 90, 0),     # Side view
+            (4, '3D View', 45, 45)             # 3D perspective
+        ]
+
+        arrow_length = 0.01  # 10mm arrows
+
+        for subplot_idx, view_title, azim, elev in views:
+            ax = fig.add_subplot(2, 2, subplot_idx, projection='3d')
+
+            # Plot viewpoint positions
+            ax.scatter(points[:, 0], points[:, 1], points[:, 2],
+                      c='green', s=50, alpha=0.8, label='Viewpoints')
+
+            # Plot normal arrows (subsample for clarity)
+            show_every = max(1, len(points) // 50)  # Show at most 50 arrows
+            for i in range(0, len(points), show_every):
+                pt = points[i]
+                normal = normals[i]
+                end_pt = pt + normal * arrow_length
+
+                ax.plot([pt[0], end_pt[0]],
+                       [pt[1], end_pt[1]],
+                       [pt[2], end_pt[2]],
+                       'r-', linewidth=1, alpha=0.7)
+
+            # Set labels
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_zlabel('Z')
+            ax.set_title(view_title)
+
+            # Set view angle
+            ax.view_init(elev=elev, azim=azim)
+
+            # Equal aspect ratio
+            max_range = np.array([
+                points[:, 0].max() - points[:, 0].min(),
+                points[:, 1].max() - points[:, 1].min(),
+                points[:, 2].max() - points[:, 2].min()
+            ]).max() / 2.0
+
+            mid_x = (points[:, 0].max() + points[:, 0].min()) * 0.5
+            mid_y = (points[:, 1].max() + points[:, 1].min()) * 0.5
+            mid_z = (points[:, 2].max() + points[:, 2].min()) * 0.5
+
+            ax.set_xlim(mid_x - max_range, mid_x + max_range)
+            ax.set_ylim(mid_y - max_range, mid_y + max_range)
+            ax.set_zlim(mid_z - max_range, mid_z + max_range)
+
+            if subplot_idx == 1:
+                ax.legend()
+
+        # Add overall title
+        fig.suptitle(f'Viewpoints Visualization\n{len(points)} viewpoints',
+                    fontsize=16, fontweight='bold')
+
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"\nSaved viewpoints visualization to: {output_path}")
+        plt.close()
+
+
 def visualize_tour(
     pcd,
     tour: torch.Tensor,
@@ -909,7 +1037,7 @@ def main():
                         help='Algorithm to use: nn (Nearest Neighbor), ri(random_insertion), or both (default: both)')
     parser.add_argument('--num_starts', type=int, default=10,
                         help='Number of initial solutions to generate (default: 10)')
-    parser.add_argument('--max_2opt_iterations', type=int, default=100,
+    parser.add_argument('--max_2opt_iterations', type=int, default=0,
                         help='Maximum number of 2-opt iterations (0 = skip 2-opt, default: 100)')
     parser.add_argument('--device', type=str, default='cuda',
                         choices=['cuda', 'cpu'],
@@ -926,6 +1054,8 @@ def main():
                         help='Use random 3D points instead of loading from file')
     parser.add_argument('--save_path', type=str, default=None,
                         help='Path to save TSP result as HDF5 file (e.g., data/output/glass_50_tour.h5)')
+    parser.add_argument('--use_viewpoints', action='store_true',
+                        help='Load pre-computed viewpoints from HDF5 file instead of sampling from mesh')
 
     args = parser.parse_args()
 
@@ -943,7 +1073,24 @@ def main():
     normals = None
     mesh_file_path = args.mesh_file if args.mesh_file else "random_points"
 
-    if args.random or args.mesh_file is None:
+    if args.use_viewpoints:
+        # Load pre-computed viewpoints from HDF5
+        if not args.mesh_file:
+            raise ValueError("--mesh_file is required when using --use_viewpoints")
+
+        file_ext = os.path.splitext(args.mesh_file)[1].lower()
+        if file_ext != '.h5':
+            raise ValueError(f"--use_viewpoints requires .h5 file, got: {file_ext}")
+
+        print(f"Loading pre-computed viewpoints from: {args.mesh_file}")
+        points, normals, metadata = load_viewpoints(args.mesh_file)
+        mesh_file_path = metadata['mesh_file']
+
+        # Note: num_points argument is ignored when using viewpoints
+        if args.num_points != 50:  # 50 is the default
+            print(f"Note: --num_points is ignored when using --use_viewpoints (loaded {len(points)} viewpoints)")
+
+    elif args.random or args.mesh_file is None:
         # Generate random 3D points
         print(f"Generating {args.num_points} random 3D points in unit cube...")
         np.random.seed(42)
@@ -1003,6 +1150,21 @@ def main():
             normals = np.zeros_like(points)
             normals[:, 2] = 1.0
 
+        # Extract camera_spec from metadata if loaded from viewpoints file
+        camera_spec_dict = None
+        if args.use_viewpoints and 'camera_spec' in metadata:
+            camera_spec_dict = metadata['camera_spec']
+            print(f"\n{'='*60}")
+            print("PROPAGATING CAMERA SPEC TO TSP FILE")
+            print(f"{'='*60}")
+            print(f"Camera spec found in viewpoints file:")
+            if 'working_distance_mm' in camera_spec_dict:
+                print(f"  Working distance: {camera_spec_dict['working_distance_mm']} mm")
+            if 'fov_width_mm' in camera_spec_dict:
+                print(f"  FOV: {camera_spec_dict['fov_width_mm']} x {camera_spec_dict.get('fov_height_mm', 'N/A')} mm")
+            print(f"This will be saved to TSP file for use in run_app_v2.py")
+            print(f"{'='*60}\n")
+
         save_tsp_result(
             file_path=args.save_path,
             points_original=points,
@@ -1015,10 +1177,15 @@ def main():
             glop_cost=final_cost,  # Store final cost for compatibility
             revision_lens=[],
             revision_iters=[],
+            camera_spec=camera_spec_dict,  # Pass camera_spec if available
         )
 
+    # Visualize viewpoints if loaded from HDF5 (before TSP)
+    if args.use_viewpoints and (args.visualize or args.plot):
+        visualize_viewpoints_only(points, normals, args.visualize, args.plot, args.output)
+
     # Visualize if requested
-    if args.visualize:
+    if args.visualize and pcd is not None:
         title = f"{best_algorithm} TSP Tour ({len(points)} points)"
         visualize_tour(pcd, tour, title=title)
 
