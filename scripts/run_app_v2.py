@@ -171,7 +171,7 @@ CUROBO_TO_EAIK_TOOL = np.array(
     dtype=np.float64,
 )
 
-NORMAL_SAMPLE_OFFSET = 0.1  # meters
+NORMAL_SAMPLE_OFFSET = 0.11  # meters
 OPEN3D_TO_ISAAC_ROT = np.array(
     [
         [1.0, 0.0, 0.0],
