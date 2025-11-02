@@ -1785,7 +1785,7 @@ def main():
 
     ik_results = compute_ik(
         mats=world_mats,
-        urdf_path="/isaac-sim/curobo/examples/lg_vision/simulation/helpers/ur20.urdf"
+        urdf_path="/isaac-sim/curobo/src/curobo/content/assets/robot/ur_description/ur20.urdf"
     )
 
     assign_start = perf_counter()
