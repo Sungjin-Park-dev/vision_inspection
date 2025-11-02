@@ -1,0 +1,32 @@
+Joint Reconfiguration Analysis Results
+============================================================
+
+Input file: data/output/20000/joint_trajectory_dp_20251102_024408.csv
+Threshold: 1.000 radians
+Total timesteps: 20000
+Total reconfigurations: 12
+Reconfiguration rate: 0.1%
+
+Per-joint statistics:
+ur20-shoulder_pan_joint: 4 reconfigurations, max change: 2.655 rad
+ur20-shoulder_lift_joint: 0 reconfigurations, max change: 0.747 rad
+ur20-elbow_joint: 4 reconfigurations, max change: 4.597 rad
+ur20-wrist_1_joint: 9 reconfigurations, max change: 3.007 rad
+ur20-wrist_2_joint: 9 reconfigurations, max change: 4.959 rad
+ur20-wrist_3_joint: 10 reconfigurations, max change: 3.156 rad
+
+All Reconfiguration Timesteps:
+Timestep   Max Change   Joints Involved               
+------------------------------------------------------------
+7995       3.106        wrist_1, wrist_2, wrist_3
+9578       3.071        wrist_1, wrist_2, wrist_3
+11287      3.291        shoulder_pan, elbow, wrist_1, wrist_2
+11859      3.491        shoulder_pan, elbow, wrist_1, wrist_3
+13217      3.798        wrist_1, wrist_2, wrist_3
+15051      3.156        wrist_1, wrist_2, wrist_3
+16017      4.959        wrist_1, wrist_2, wrist_3
+16656      3.006        wrist_1, wrist_2, wrist_3
+17383      3.713        shoulder_pan, elbow, wrist_1, wrist_3
+17641      4.597        shoulder_pan, elbow, wrist_2, wrist_3
+19921      1.068        wrist_3
+19998      1.582        wrist_2
