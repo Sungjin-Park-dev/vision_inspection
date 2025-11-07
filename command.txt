@@ -1,0 +1,7 @@
+omni_python scripts/mesh_to_viewpoints.py --mesh_file data/object/glass_yup.obj --save_path data/tour/viewpoints_3000.h5
+
+omni_python scripts/mesh_to_tsp.py --use_viewpoints --mesh_file data/viewpoint/viewpoint_3000.h5 --save_path data/tour/tour_3000.h5 
+
+omni_python scripts/run_app_v3.py --tsp_tour_path data/input/tour/test_3000_nn.h5 --visualize_spheres
+
+omni_python scripts/fcl_check.py --trajectory data/trajecotry/joint_trajectory_dp_3000.csv --show_link_collisions --interp-steps 5 --verbose
