@@ -233,7 +233,7 @@ def compute_surface_curvature(mesh: o3d.geometry.TriangleMesh) -> np.ndarray:
 def estimate_required_viewpoints(
     mesh: o3d.geometry.TriangleMesh,
     camera_spec: CameraSpec,
-    target_coverage: float = 0.95,
+    target_coverage: float = 1.0,
     curvature_factor: float = 1.5
 ) -> int:
     """
@@ -853,6 +853,7 @@ def main():
 
     # Input/Output
     parser.add_argument('--mesh_file', type=str, required=True,
+                        default="data/object/glass_yup.obj",
                         help='Path to mesh file (.obj)')
     parser.add_argument('--save_path', type=str, default=None,
                         help='Path to save viewpoints as HDF5 file (e.g., data/input/tour/glass_fov.h5)')
@@ -876,8 +877,8 @@ def main():
                         help='Number of surface points to sample (default: auto-calculate)')
     parser.add_argument('--auto_num_points', action='store_true',
                         help='Automatically calculate optimal number of viewpoints based on mesh curvature')
-    parser.add_argument('--target_coverage', type=float, default=0.95,
-                        help='Target coverage ratio for auto calculation (default: 0.95)')
+    parser.add_argument('--target_coverage', type=float, default=1.0,
+                        help='Target coverage ratio for auto calculation (default: 1.0)')
     parser.add_argument('--adaptive_sampling', action='store_true',
                         help='Use adaptive sampling based on surface curvature')
     parser.add_argument('--curvature_weight', type=float, default=0.5,

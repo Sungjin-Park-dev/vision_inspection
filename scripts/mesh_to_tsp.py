@@ -1028,7 +1028,8 @@ def plot_tour_matplotlib(
 
 def main():
     parser = argparse.ArgumentParser(description='3D Mesh to TSP Solver using NN/Random Insertion + 2-opt')
-    parser.add_argument('--mesh_file', type=str, default=None,
+    parser.add_argument('--mesh_file', type=str,
+                        default="data/object/glass_yup.obj",
                         help='Path to mesh file (.obj or .pcd). If not provided, uses random points.')
     parser.add_argument('--num_points', type=int, default=50,
                         help='Number of points to sample')

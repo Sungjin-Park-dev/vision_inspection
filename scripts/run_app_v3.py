@@ -616,7 +616,7 @@ def setup_robot(my_world: World, config: SimulationConfig) -> dict:
 
 def setup_glass_object(my_world: World, config: SimulationConfig) -> XFormPrim:
     """Setup glass object in the world"""
-    asset_path = "/isaac-sim/curobo/vision_inspection/data/input/glass_isaac_ori.usdc"
+    asset_path = "/isaac-sim/curobo/vision_inspection/data/input/object/glass.usdc"
     add_reference_to_stage(usd_path=asset_path, prim_path="/World/glass_usd")
 
     glass_prim = XFormPrim(
@@ -645,6 +645,80 @@ def setup_glass_object(my_world: World, config: SimulationConfig) -> XFormPrim:
         thin_walled=False,
     )
     glass_prim.apply_visual_material(glass_material)
+
+    return glass_prim
+
+
+def setup_glass_object_from_mesh(my_world: World, config: SimulationConfig, usd_helper: UsdHelper) -> XFormPrim:
+    """Setup glass object in the world using mesh file
+
+    Args:
+        my_world: Isaac Sim world
+        config: Simulation configuration
+        usd_helper: UsdHelper for adding mesh to stage
+
+    Returns:
+        XFormPrim: Glass object prim
+    """
+    # Default mesh path (can be overridden in config)
+    mesh_file_path = getattr(config, 'glass_mesh_path',
+                              "/isaac-sim/curobo/vision_inspection/data/input/object/glass_zup.obj")
+
+    print(f"\n{'='*60}")
+    print("ADDING GLASS MESH TO STAGE")
+    print(f"{'='*60}")
+    print(f"Mesh file: {mesh_file_path}")
+    print(f"Position: {config.glass_position}")
+    print(f"{'='*60}\n")
+
+    # Load stage
+    usd_helper.load_stage(my_world.stage)
+
+    # Create glass mesh with position and orientation
+    glass_mesh = Mesh(
+        name="glass",
+        file_path=mesh_file_path,
+        pose=list(config.glass_position) + [1, 0, 0, 0],  # position + quaternion (w, x, y, z)
+        color=[0.7, 0.85, 0.9, 0.3]  # Light blue with transparency
+    )
+
+    # Add mesh to stage
+    glass_path = usd_helper.add_mesh_to_stage(
+        obstacle=glass_mesh,
+        base_frame="/World"
+    )
+
+    print(f"Glass mesh added at prim path: {glass_path}")
+
+    # Wrap with XFormPrim for control
+    glass_prim = XFormPrim(glass_path)
+
+    # Print transform for verification
+    glass_world_pos, glass_world_rot = glass_prim.get_world_pose()
+    glass_local_scale = glass_prim.get_local_scale()
+    print(f"\n{'='*60}")
+    print("GLASS OBJECT TRANSFORM (Isaac Sim)")
+    print(f"{'='*60}")
+    print(f"World position: {glass_world_pos} (meters)")
+    print(f"World rotation (quat): {glass_world_rot}")
+    print(f"Local scale: {glass_local_scale}")
+    print(f"Note: Isaac Sim uses meters (stage_units_in_meters=1.0)")
+    print(f"{'='*60}\n")
+
+    # Apply glass material (optional)
+    try:
+        glass_material = OmniGlass(
+            prim_path="/World/Looks/glass_mat",
+            color=np.array([0.7, 0.85, 0.9]),
+            ior=1.52,
+            depth=0.01,
+            thin_walled=False,
+        )
+        glass_prim.apply_visual_material(glass_material)
+        print("Applied OmniGlass material")
+    except Exception as e:
+        print(f"Warning: Could not apply glass material: {e}")
+        print("Continuing with default mesh material...")
 
     return glass_prim
 
@@ -763,7 +837,11 @@ def initialize_simulation(config: SimulationConfig) -> WorldState:
 
     my_world = create_world()
     robot_state = setup_robot(my_world, config)
-    glass_prim = setup_glass_object(my_world, config)
+    # glass_prim = setup_glass_object(my_world, config)
+    
+    usd_helper = UsdHelper()
+    glass_prim = setup_glass_object_from_mesh(my_world, config, usd_helper)
+
     camera = setup_camera(robot_state['robot_prim_path'], my_world)
     ik_solver = setup_collision_checker(my_world, robot_state, config)
 
@@ -1448,14 +1526,14 @@ def save_results(
 
     # Determine output directory
     num_points = tsp_result['metadata']['num_points']
-    output_dir = f'data/output/{num_points}'
+    output_dir = f'data/trajectory/{num_points}'
     os.makedirs(output_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Save CSV
     viewpoints_with_safe = viewpoint_mgr.filter_with_safe_ik()
-    csv_path = f'{output_dir}/joint_trajectory_{config.selection_method}_{timestamp}.csv'
+    csv_path = f'{output_dir}/joint_trajectory_{config.selection_method}.csv'
     save_joint_trajectory_csv(viewpoints_with_safe, joint_targets, csv_path)
 
     # Analyze reconfigurations
@@ -1529,6 +1607,10 @@ def run_simulation(
     idle_counter = 0
     viewpoint_counter = 0
 
+    # Sphere visualization
+    spheres = None
+    tensor_args = TensorDeviceType()
+
     # Output directory
     num_points = tsp_result['metadata']['num_points']
     output_dir = f'data/output/{num_points}'
@@ -1549,6 +1631,42 @@ def run_simulation(
         # Record current state
         current_joints = get_active_joint_positions(world_state.robot, world_state.idx_list)
         history.record_step(step_counter, current_joints)
+
+        # Visualize robot spheres
+        if config.visualize_spheres and step_counter % 2 == 0:
+            # Get current joint state from simulator
+            sim_js = world_state.robot.get_joints_state()
+            sim_js_names = world_state.robot.dof_names
+
+            # Convert to CuRobo joint state
+            cu_js = JointState(
+                position=tensor_args.to_device(sim_js.positions),
+                velocity=tensor_args.to_device(sim_js.velocities) * 0.0,
+                acceleration=tensor_args.to_device(sim_js.velocities) * 0.0,
+                jerk=tensor_args.to_device(sim_js.velocities) * 0.0,
+                joint_names=sim_js_names,
+            )
+            cu_js = cu_js.get_ordered_joint_state(world_state.ik_solver.kinematics.joint_names)
+
+            # Get sphere representation
+            sph_list = world_state.ik_solver.kinematics.get_robot_as_spheres(cu_js.position)
+
+            if spheres is None:
+                spheres = []
+                # Create spheres
+                for si, s in enumerate(sph_list[0]):
+                    sp = sphere.VisualSphere(
+                        prim_path="/curobo/robot_sphere_" + str(si),
+                        position=np.ravel(s.position),
+                        radius=float(s.radius),
+                        color=np.array([0, 0.8, 0.2]),
+                    )
+                    spheres.append(sp)
+            else:
+                # Update sphere positions and radii
+                for si, s in enumerate(sph_list[0]):
+                    spheres[si].set_world_pose(position=np.ravel(s.position))
+                    spheres[si].set_radius(float(s.radius))
 
         # Execute trajectory
         if active_trajectory and trajectory_step < len(active_trajectory):
