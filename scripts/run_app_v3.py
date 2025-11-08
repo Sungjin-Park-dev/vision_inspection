@@ -13,6 +13,34 @@
 """
 Refactored vision inspection robot trajectory planner (v3)
 
+⚠️  DEPRECATED - This script is deprecated as of 2025-11-08
+===========================================================
+
+This monolithic script has been split into modular components for better maintainability:
+
+NEW RECOMMENDED WORKFLOW:
+1. Compute IK solutions:
+   omni_python scripts/compute_ik_solutions.py --tsp_tour data/tour/tour_3000.h5
+
+2. Plan trajectory (no Isaac Sim required):
+   python scripts/plan_trajectory.py --ik_solutions data/ik/ik_solutions_3000.h5 --method dp
+
+3. Simulate trajectory:
+   omni_python scripts/simulate_trajectory.py --trajectory data/trajectory/3000/joint_trajectory_dp.csv
+
+OR run full pipeline at once:
+   omni_python scripts/run_full_pipeline.py --tsp_tour data/tour/tour_3000.h5 --method dp --simulate
+
+Benefits of new workflow:
+- ✓ Compute IK once, try multiple planning methods without re-running IK
+- ✓ Plan trajectory without Isaac Sim (faster iteration)
+- ✓ Each stage can be tested independently
+- ✓ Better code organization and maintainability
+
+This file is kept for backward compatibility only.
+===========================================================
+
+Original Description:
 This version improves upon run_app_v2.py by:
 - Removing global variables and encapsulating state in classes
 - Breaking down the large main() function into smaller, testable functions
@@ -42,6 +70,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from urchin import URDF
+
+# Add parent directory to path for imports
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # ============================================================================
 # Isaac Sim Imports
@@ -156,6 +188,12 @@ from curobo.wrap.reacher.mpc import MpcSolver, MpcSolverConfig
 # ============================================================================
 # Local Imports
 # ============================================================================
+# Common utilities
+from common import config
+from common.coordinate_utils import normalize_vectors, offset_points_along_normals
+from common.interpolation_utils import generate_interpolated_path
+
+# Project modules
 from utilss.simulation_helper import add_extensions, add_robot_to_scene
 from analyze_joint_reconfigurations import (
     load_joint_trajectory,
@@ -169,21 +207,15 @@ from eaik.IK_DH import DhRobot
 # ============================================================================
 # Constants and Coordinate Transformations
 # ============================================================================
+# Note: Z-up coordinate system is now used throughout the pipeline
+# No Y-up → Z-up conversion needed (mesh files are already Z-up)
+
 CUROBO_TO_EAIK_TOOL = np.array(
     [
         [-1.0, 0.0, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
-    ],
-    dtype=np.float64,
-)
-
-OPEN3D_TO_ISAAC_ROT = np.array(
-    [
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, -1.0],
-        [0.0, 1.0, 0.0],
     ],
     dtype=np.float64,
 )
@@ -205,30 +237,30 @@ class SimulationConfig:
     save_plot: bool
     no_sim: bool
 
-    # Robot and trajectory parameters
-    normal_sample_offset: float = 0.11  # meters (working distance default)
-    interpolation_steps: int = 60
+    # Robot and trajectory parameters (defaults from common.config)
+    normal_sample_offset: float = config.get_camera_working_distance_m()  # meters (working distance)
+    interpolation_steps: int = config.INTERPOLATION_STEPS
 
-    # Joint selection cost function parameters
+    # Joint selection cost function parameters (defaults from common.config)
     joint_weights: np.ndarray = field(
-        default_factory=lambda: np.array([2.0, 2.0, 2.0, 1.0, 1.0, 1.0], dtype=np.float64)
+        default_factory=lambda: config.JOINT_WEIGHTS.copy()
     )
-    reconfig_threshold: float = 1.0  # radians
-    reconfig_penalty: float = 10.0
-    max_move_weight: float = 5.0
+    reconfig_threshold: float = config.RECONFIGURATION_THRESHOLD  # radians
+    reconfig_penalty: float = config.RECONFIGURATION_PENALTY
+    max_move_weight: float = config.MAX_MOVE_WEIGHT
 
     # Visualization parameters
     plot_interval: int = 5  # Update plot every N viewpoints
 
-    # World configuration
-    table_position: np.ndarray = field(default_factory=lambda: np.array([0.7, 0.0, 0.0]))
-    table_dimensions: np.ndarray = field(default_factory=lambda: np.array([0.6, 1.0, 1.1]))
-    glass_position: np.ndarray = field(default_factory=lambda: np.array([0.7, 0.0, 0.6]))
+    # World configuration (defaults from common.config)
+    table_position: np.ndarray = field(default_factory=lambda: config.TABLE_POSITION.copy())
+    table_dimensions: np.ndarray = field(default_factory=lambda: config.TABLE_DIMENSIONS.copy())
+    glass_position: np.ndarray = field(default_factory=lambda: config.GLASS_POSITION.copy())
 
-    # IK Solver configuration
-    ik_rotation_threshold: float = 0.05
-    ik_position_threshold: float = 0.005
-    ik_num_seeds: int = 20
+    # IK Solver configuration (defaults from common.config)
+    ik_rotation_threshold: float = config.IK_ROTATION_THRESHOLD
+    ik_position_threshold: float = config.IK_POSITION_THRESHOLD
+    ik_num_seeds: int = config.IK_NUM_SEEDS
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> 'SimulationConfig':
@@ -353,39 +385,20 @@ class JointHistoryTracker:
 # ============================================================================
 # Utility Functions
 # ============================================================================
-def normalize_vectors(vectors: np.ndarray) -> np.ndarray:
-    """Normalize vectors to unit length"""
-    if vectors.size == 0:
-        return vectors
-    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    return np.divide(vectors, np.clip(norms, 1e-9, None))
+# normalize_vectors() and offset_points_along_normals() are now imported from common.coordinate_utils
 
 
-def offset_points_along_normals(
-    points: np.ndarray, normals: np.ndarray, offset: float
-) -> np.ndarray:
-    """Offset points along their normals by a given distance"""
-    if points.size == 0:
-        return points
-    if points.shape != normals.shape:
-        raise ValueError("Points and normals must have the same shape")
-    safe_normals = normalize_vectors(normals)
-    return points + safe_normals * offset
-
-
-def open3d_to_isaac_coords(
-    points: np.ndarray, normals: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Convert Open3D coordinates (Y-up) to Isaac Sim coordinates (Z-up)"""
-    isaac_points = (OPEN3D_TO_ISAAC_ROT @ points.T).T
-    isaac_normals = normalize_vectors((OPEN3D_TO_ISAAC_ROT @ normals.T).T)
-    return isaac_points, isaac_normals
+# open3d_to_isaac_coords() removed - Z-up coordinate system used throughout (no conversion needed)
 
 
 def open3d_pose_to_world(
     pose_matrix: np.ndarray, reference_prim: XFormPrim, debug: bool = False
 ) -> np.ndarray:
-    """Transform Open3D local pose to Isaac Sim world pose"""
+    """
+    Transform local pose to Isaac Sim world pose
+
+    Note: Z-up coordinate system is used throughout, so no Open3D→Isaac conversion needed.
+    """
     if pose_matrix.shape != (4, 4):
         raise ValueError("Pose matrix must be 4x4")
     if reference_prim is None:
@@ -400,14 +413,11 @@ def open3d_pose_to_world(
         print(f"Reference object world position: {world_position}")
         print(f"Reference object world orientation (quat): {world_orientation}")
         print(f"Reference object local scale: {local_scale}")
-        print(f"Original pose position (Open3D): {pose_matrix[:3, 3]}")
+        print(f"Original pose position (Z-up): {pose_matrix[:3, 3]}")
 
-    # Convert from Open3D to Isaac coordinate system
-    local_rot = OPEN3D_TO_ISAAC_ROT @ pose_matrix[:3, :3]
-    local_pos = OPEN3D_TO_ISAAC_ROT @ pose_matrix[:3, 3]
-
-    if debug:
-        print(f"After Open3D->Isaac rotation: {local_pos}")
+    # Extract local pose components (already in Z-up)
+    local_rot = pose_matrix[:3, :3]
+    local_pos = pose_matrix[:3, 3]
 
     # Apply scale, rotation, translation
     scaled_pos = local_pos * local_scale
@@ -662,7 +672,7 @@ def setup_glass_object_from_mesh(my_world: World, config: SimulationConfig, usd_
     """
     # Default mesh path (can be overridden in config)
     mesh_file_path = getattr(config, 'glass_mesh_path',
-                              "/isaac-sim/curobo/vision_inspection/data/input/object/glass_zup.obj")
+                              "/isaac-sim/curobo/vision_inspection/data/object/glass_zup.obj")
 
     print(f"\n{'='*60}")
     print("ADDING GLASS MESH TO STAGE")
@@ -1553,23 +1563,7 @@ def save_results(
 # ============================================================================
 # Simulation Loop
 # ============================================================================
-def generate_interpolated_path(
-    start: np.ndarray,
-    target: np.ndarray,
-    num_steps: int
-) -> List[np.ndarray]:
-    """Generate linear interpolation between joint configurations"""
-    start = np.asarray(start, dtype=np.float64)
-    target = np.asarray(target, dtype=np.float64)
-
-    if start.shape != target.shape:
-        raise ValueError("Start and target must have same shape")
-    if num_steps <= 0:
-        return [target]
-
-    alphas = np.linspace(0.0, 1.0, num_steps + 1, endpoint=True)[1:]
-    path = [start + alpha * (target - start) for alpha in alphas]
-    return path if path else [target]
+# generate_interpolated_path() is now imported from common.interpolation_utils
 
 
 def get_active_joint_positions(robot, idx_list: List[int]) -> np.ndarray:

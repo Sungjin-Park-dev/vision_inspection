@@ -5,12 +5,17 @@ FOV-based Viewpoint Sampling for Vision Inspection
 Given camera specifications (FOV, working distance, depth of field),
 this script samples optimal viewpoints that efficiently cover a 3D mesh object.
 
-Key differences from mesh_to_tsp.py:
-- Uses FOV-based sampling instead of Poisson disk sampling
+Key features:
+- Uses FOV-based sampling with Poisson disk distribution
 - Considers camera specifications (FOV, WD, DOF)
 - Generates viewpoints with proper spacing and overlap
 - Validates depth of field constraints
-- Outputs compatible HDF5 format for mesh_to_tsp.py
+- Outputs compatible HDF5 format for viewpoints_to_tsp.py
+
+Coordinate system:
+- Input: Z-up mesh (compatible with Isaac Sim / URDF / Pinocchio)
+- Output: Z-up surface positions and normals
+- Camera positions computed as: surface_position + surface_normal * working_distance
 """
 
 import os
@@ -31,6 +36,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import open3d as o3d
 
+# Import common utilities
+from common import config
+from common.coordinate_utils import normalize_vectors, offset_points_along_normals
+
 # Import TSP utilities for saving results
 from tsp_utils import save_viewpoints
 
@@ -40,24 +49,26 @@ class CameraSpec:
     """
     Camera and lens specifications
 
+    Default values are imported from common.config for consistency across the pipeline.
+
     Attributes:
-        sensor_width_px: Sensor width in pixels (default: 4096)
-        sensor_height_px: Sensor height in pixels (default: 3000)
-        pixel_size_um: Pixel size in micrometers (default: 3.45)
-        fov_width_mm: Field of view width in mm (default: 41.0)
-        fov_height_mm: Field of view height in mm (default: 30.0)
-        working_distance_mm: Working distance in mm (default: 110.0)
-        depth_of_field_mm: Depth of field in mm (default: 0.5)
-        overlap_ratio: Overlap ratio between adjacent views (default: 0.25 for 25%)
+        sensor_width_px: Sensor width in pixels
+        sensor_height_px: Sensor height in pixels
+        pixel_size_um: Pixel size in micrometers
+        fov_width_mm: Field of view width in mm
+        fov_height_mm: Field of view height in mm
+        working_distance_mm: Working distance in mm
+        depth_of_field_mm: Depth of field in mm
+        overlap_ratio: Overlap ratio between adjacent views (0.25 = 25%)
     """
-    sensor_width_px: int = 4096
-    sensor_height_px: int = 3000
-    pixel_size_um: float = 3.45
-    fov_width_mm: float = 41.0
-    fov_height_mm: float = 30.0
-    working_distance_mm: float = 110.0
-    depth_of_field_mm: float = 0.5
-    overlap_ratio: float = 0.25
+    sensor_width_px: int = config.CAMERA_SENSOR_WIDTH_PX
+    sensor_height_px: int = config.CAMERA_SENSOR_HEIGHT_PX
+    pixel_size_um: float = config.CAMERA_PIXEL_SIZE_UM
+    fov_width_mm: float = config.CAMERA_FOV_WIDTH_MM
+    fov_height_mm: float = config.CAMERA_FOV_HEIGHT_MM
+    working_distance_mm: float = config.CAMERA_WORKING_DISTANCE_MM
+    depth_of_field_mm: float = config.CAMERA_DEPTH_OF_FIELD_MM
+    overlap_ratio: float = config.CAMERA_OVERLAP_RATIO
 
     def get_effective_coverage_mm(self) -> Tuple[float, float]:
         """
@@ -161,10 +172,10 @@ def load_mesh_file(file_path: str) -> Tuple[o3d.geometry.TriangleMesh, float]:
 
     print(f"Loaded mesh: {num_vertices} vertices, {num_triangles} triangles")
     print(f"Surface area: {surface_area * 1e6:.2f} mm² (assuming mesh is in meters)")
-    print(f"\nMesh coordinate range:")
+    print(f"\nMesh coordinate range (Z-up coordinate system):")
     print(f"  X: [{coord_min[0]:.6f}, {coord_max[0]:.6f}] (range: {coord_range[0]:.6f})")
     print(f"  Y: [{coord_min[1]:.6f}, {coord_max[1]:.6f}] (range: {coord_range[1]:.6f})")
-    print(f"  Z: [{coord_min[2]:.6f}, {coord_max[2]:.6f}] (range: {coord_range[2]:.6f})")
+    print(f"  Z: [{coord_min[2]:.6f}, {coord_max[2]:.6f}] (range: {coord_range[2]:.6f}) ← up direction")
 
     # Detect likely unit issues
     max_range = coord_range.max()
@@ -175,23 +186,12 @@ def load_mesh_file(file_path: str) -> Tuple[o3d.geometry.TriangleMesh, float]:
         print(f"\n⚠️  WARNING: Mesh coordinates appear unusually small (max range: {max_range:.6f})")
     else:
         print(f"\n✓ Mesh coordinates appear to be in METERS (max range: {max_range:.4f}m)")
+        print(f"✓ Using Z-up coordinate system (compatible with Isaac Sim / URDF / Pinocchio)")
 
     return mesh, surface_area
 
 
-def normalize_vectors(vectors: np.ndarray) -> np.ndarray:
-    """
-    Normalize vectors to unit length
-
-    Args:
-        vectors: (N, 3) array of vectors
-
-    Returns:
-        normalized: (N, 3) array of unit vectors
-    """
-    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    norms = np.maximum(norms, 1e-8)  # Avoid division by zero
-    return vectors / norms
+# normalize_vectors() is now imported from common.coordinate_utils
 
 
 def compute_surface_curvature(mesh: o3d.geometry.TriangleMesh) -> np.ndarray:
@@ -853,24 +853,24 @@ def main():
 
     # Input/Output
     parser.add_argument('--mesh_file', type=str, required=True,
-                        default="data/object/glass_yup.obj",
-                        help='Path to mesh file (.obj)')
+                        default=config.DEFAULT_MESH_FILE,
+                        help='Path to mesh file (.obj) - Z-up coordinate system')
     parser.add_argument('--save_path', type=str, default=None,
                         help='Path to save viewpoints as HDF5 file (e.g., data/input/tour/glass_fov.h5)')
     parser.add_argument('--output', type=str, default='viewpoint_stats.png',
                         help='Output path for statistics plot')
 
-    # Camera specifications
-    parser.add_argument('--fov_width', type=float, default=41.0,
-                        help='Field of view width in mm (default: 41.0)')
-    parser.add_argument('--fov_height', type=float, default=30.0,
-                        help='Field of view height in mm (default: 30.0)')
-    parser.add_argument('--working_distance', type=float, default=110.0,
-                        help='Working distance in mm (default: 110.0)')
-    parser.add_argument('--depth_of_field', type=float, default=0.5,
-                        help='Depth of field in mm (default: 0.5)')
-    parser.add_argument('--overlap', type=float, default=0.25,
-                        help='Overlap ratio between views (default: 0.25 for 25%%)')
+    # Camera specifications (defaults from common.config)
+    parser.add_argument('--fov_width', type=float, default=config.CAMERA_FOV_WIDTH_MM,
+                        help=f'Field of view width in mm (default: {config.CAMERA_FOV_WIDTH_MM})')
+    parser.add_argument('--fov_height', type=float, default=config.CAMERA_FOV_HEIGHT_MM,
+                        help=f'Field of view height in mm (default: {config.CAMERA_FOV_HEIGHT_MM})')
+    parser.add_argument('--working_distance', type=float, default=config.CAMERA_WORKING_DISTANCE_MM,
+                        help=f'Working distance in mm (default: {config.CAMERA_WORKING_DISTANCE_MM})')
+    parser.add_argument('--depth_of_field', type=float, default=config.CAMERA_DEPTH_OF_FIELD_MM,
+                        help=f'Depth of field in mm (default: {config.CAMERA_DEPTH_OF_FIELD_MM})')
+    parser.add_argument('--overlap', type=float, default=config.CAMERA_OVERLAP_RATIO,
+                        help=f'Overlap ratio between views (default: {config.CAMERA_OVERLAP_RATIO} for {config.CAMERA_OVERLAP_RATIO*100:.0f}%%)')
 
     # Sampling parameters
     parser.add_argument('--num_points', type=int, default=None,
