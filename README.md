@@ -169,11 +169,11 @@ python scripts/plan_trajectory.py \
 
 ---
 
-#### Step 5: Simulate Trajectory (Optional)
+#### Step 5: Simulate Trajectory (Optional, 범준이형)
 
 ```bash
 omni_python scripts/simulate_trajectory.py \
-    --trajectory data/trajectory/3000/joint_trajectory_dp.csv \
+    --trajectory data/trajectory/2369/joint_trajectory_dp.csv \
     --robot ur20.yml \
     --visualize_spheres \
     --interpolation_steps 60
