@@ -48,6 +48,12 @@ class COALCollisionChecker:
                  glass_position: np.ndarray = None,
                  table_position: np.ndarray = None,
                  table_dimensions: np.ndarray = None,
+                 wall_position: np.ndarray = None,
+                 wall_dimensions: np.ndarray = None,
+                 workbench_position: np.ndarray = None,
+                 workbench_dimensions: np.ndarray = None,
+                 robot_mount_position: np.ndarray = None,
+                 robot_mount_dimensions: np.ndarray = None,
                  robot_config_path: Optional[str] = None,
                  use_capsules: bool = False, capsule_radius: float = 0.05,
                  use_link_meshes: bool = False,
@@ -62,6 +68,12 @@ class COALCollisionChecker:
             glass_position: Position of glass object in world frame (x, y, z)
             table_position: Position of table cuboid in world frame (x, y, z)
             table_dimensions: Dimensions of table cuboid (x, y, z) in meters
+            wall_position: Position of wall cuboid in world frame (x, y, z)
+            wall_dimensions: Dimensions of wall cuboid (x, y, z) in meters
+            workbench_position: Position of workbench cuboid in world frame (x, y, z)
+            workbench_dimensions: Dimensions of workbench cuboid (x, y, z) in meters
+            robot_mount_position: Position of robot mount cuboid in world frame (x, y, z)
+            robot_mount_dimensions: Dimensions of robot mount cuboid (x, y, z) in meters
             robot_config_path: Path to CuRobo robot config YAML (e.g., ur20.yml)
             use_capsules: If True, use capsule approximations instead of spheres
             capsule_radius: Radius for capsule collision geometry (meters)
@@ -77,6 +89,18 @@ class COALCollisionChecker:
             table_position = config.TABLE_POSITION.copy()
         if table_dimensions is None:
             table_dimensions = config.TABLE_DIMENSIONS.copy()
+        if wall_position is None:
+            wall_position = config.WALL_POSITION.copy()
+        if wall_dimensions is None:
+            wall_dimensions = config.WALL_DIMENSIONS.copy()
+        if workbench_position is None:
+            workbench_position = config.WORKBENCH_POSITION.copy()
+        if workbench_dimensions is None:
+            workbench_dimensions = config.WORKBENCH_DIMENSIONS.copy()
+        if robot_mount_position is None:
+            robot_mount_position = config.ROBOT_MOUNT_POSITION.copy()
+        if robot_mount_dimensions is None:
+            robot_mount_dimensions = config.ROBOT_MOUNT_DIMENSIONS.copy()
         if robot_config_path is None:
             robot_config_path = config.DEFAULT_ROBOT_CONFIG_YAML
         if mesh_base_path is None:
@@ -90,6 +114,12 @@ class COALCollisionChecker:
         self.glass_position = glass_position
         self.table_position = table_position
         self.table_dimensions = table_dimensions
+        self.wall_position = wall_position
+        self.wall_dimensions = wall_dimensions
+        self.workbench_position = workbench_position
+        self.workbench_dimensions = workbench_dimensions
+        self.robot_mount_position = robot_mount_position
+        self.robot_mount_dimensions = robot_mount_dimensions
         self.robot_config_path = robot_config_path
         self.use_capsules = use_capsules
         self.capsule_radius = capsule_radius
@@ -140,6 +170,45 @@ class COALCollisionChecker:
         table_obj = coal.CollisionObject(table_box, table_transform)
         self.obstacle_collision_objects.append(table_obj)
         print(f"  Table cuboid added successfully")
+
+        # Add wall cuboid
+        print(f"\nAdding wall cuboid...")
+        print(f"  Position: {wall_position}")
+        print(f"  Dimensions (x, y, z): {wall_dimensions}")
+        wall_box = coal.Box(wall_dimensions[0], wall_dimensions[1], wall_dimensions[2])
+        wall_transform = self._create_transform(
+            rotation=np.eye(3),
+            translation=wall_position
+        )
+        wall_obj = coal.CollisionObject(wall_box, wall_transform)
+        self.obstacle_collision_objects.append(wall_obj)
+        print(f"  Wall cuboid added successfully")
+
+        # Add workbench cuboid
+        print(f"\nAdding workbench cuboid...")
+        print(f"  Position: {workbench_position}")
+        print(f"  Dimensions (x, y, z): {workbench_dimensions}")
+        workbench_box = coal.Box(workbench_dimensions[0], workbench_dimensions[1], workbench_dimensions[2])
+        workbench_transform = self._create_transform(
+            rotation=np.eye(3),
+            translation=workbench_position
+        )
+        workbench_obj = coal.CollisionObject(workbench_box, workbench_transform)
+        self.obstacle_collision_objects.append(workbench_obj)
+        print(f"  Workbench cuboid added successfully")
+
+        # Add robot mount cuboid
+        print(f"\nAdding robot mount cuboid...")
+        print(f"  Position: {robot_mount_position}")
+        print(f"  Dimensions (x, y, z): {robot_mount_dimensions}")
+        robot_mount_box = coal.Box(robot_mount_dimensions[0], robot_mount_dimensions[1], robot_mount_dimensions[2])
+        robot_mount_transform = self._create_transform(
+            rotation=np.eye(3),
+            translation=robot_mount_position
+        )
+        robot_mount_obj = coal.CollisionObject(robot_mount_box, robot_mount_transform)
+        self.obstacle_collision_objects.append(robot_mount_obj)
+        print(f"  Robot mount cuboid added successfully")
 
         # Load robot model with pinocchio
         print(f"\nLoading robot model with Pinocchio...")

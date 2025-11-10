@@ -856,7 +856,7 @@ def main():
                         default=config.DEFAULT_MESH_FILE,
                         help='Path to mesh file (.obj) - Z-up coordinate system')
     parser.add_argument('--save_path', type=str, default=None,
-                        help='Path to save viewpoints as HDF5 file (e.g., data/input/tour/glass_fov.h5)')
+                        help='Path to save viewpoints as HDF5 file (default: data/viewpoint/{num_points}/viewpoints.h5)')
     parser.add_argument('--output', type=str, default='viewpoint_stats.png',
                         help='Output path for statistics plot')
 
@@ -1013,7 +1013,16 @@ def main():
         print(f"  Max depth variation: {stats['max_depth_variation'] * 1000:.3f} mm")
     print("=" * 60)
 
-    # Save to HDF5 if requested
+    # Determine save path
+    if args.save_path is None:
+        # Auto-generate save path with num_points subdirectory
+        num_points = len(viewpoints)
+        output_dir = f'data/viewpoint/{num_points}'
+        os.makedirs(output_dir, exist_ok=True)
+        args.save_path = f'{output_dir}/viewpoints.h5'
+        print(f"\nAuto-generated save path: {args.save_path}")
+
+    # Save to HDF5
     if args.save_path:
         # IMPORTANT: Save surface positions and surface normals (NOT viewpoint positions)
         # This ensures compatibility with mesh_to_tsp.py and run_app_v2.py

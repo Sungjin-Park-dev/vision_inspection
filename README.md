@@ -21,7 +21,7 @@ This pipeline generates collision-free robot trajectories for inspecting 3D obje
 - **Modular pipeline**: Each stage runs independently with intermediate file outputs
 - **Fast iteration**: Most stages run without Isaac Sim (only visualization needs it)
 - **Collision-aware planning**: Validates entire trajectory including interpolated segments
-- **Optimized visit order**: Multiple TSP algorithms (Nearest Neighbor, Random Insertion, 2-opt)
+- **Optimized visit order**: Multiple TSP algorithms (Nearest Neighbor, Random Insertion)
 - **Multi-solution IK**: Dynamic programming selects optimal joint configurations
 - **Z-up coordinate system**: Unified throughout (Isaac Sim, URDF, Pinocchio, COAL)
 - **Centralized configuration**: All parameters in `common/config.py`
@@ -62,10 +62,10 @@ vision_inspection/
 │
 ├── data/                             # Data directory
 │   ├── object/                       # 3D mesh files (Z-up format)
-│   ├── viewpoint/                    # Sampled viewpoints (HDF5)
-│   ├── tour/                         # TSP-optimized tours (HDF5)
-│   ├── ik/                           # IK solutions (HDF5)
-│   └── trajectory/                   # Joint trajectories (CSV)
+│   ├── viewpoint/{num_points}/       # Sampled viewpoints (HDF5)
+│   ├── tour/{num_points}/            # TSP-optimized tours (HDF5)
+│   ├── ik/{num_points}/              # IK solutions (HDF5)
+│   └── trajectory/{num_points}/      # Joint trajectories (CSV)
 │
 └── docs/                             # Documentation
     ├── REFACTORING_SUMMARY.md        # Modular pipeline details
@@ -88,12 +88,12 @@ This method allows you to inspect and modify intermediate results at each stage.
 ```bash
 python scripts/mesh_to_viewpoints.py \
     --mesh_file data/object/glass_zup.obj \
-    --save_path data/viewpoint/viewpoints_3000.h5 \
+    --save_path data/viewpoint/3000/viewpoints.h5 \
     --auto_num_points \
     --visualize
 ```
 
-**Output**: `data/viewpoint/viewpoints_3000.h5` containing surface positions and normals
+**Output**: `data/viewpoint/3000/viewpoints.h5` containing surface positions and normals
 
 **Requirements**: Python only (no Isaac Sim)
 
@@ -103,15 +103,19 @@ python scripts/mesh_to_viewpoints.py \
 
 ```bash
 python scripts/viewpoints_to_tsp.py \
-    --use_viewpoints data/viewpoint/viewpoints_3000.h5 \
-    --save_path data/tour/tour_3000.h5 \
+    --viewpoint_file data/viewpoint/3000/viewpoints.h5 \
     --algorithm both \
-    --visualize
+    --save_path data/tour/3000/tour.h5
 ```
 
-**Output**: `data/tour/tour_3000.h5` containing optimized tour
+**Output**: `data/tour/3000/tour.h5` containing optimized tour
 
 **Requirements**: Python only (no Isaac Sim)
+
+**Algorithms**:
+- `nn`: Nearest Neighbor (fast, greedy)
+- `ri`: Random Insertion (better quality)
+- `both`: Try both and select best (default)
 
 ---
 
@@ -119,12 +123,12 @@ python scripts/viewpoints_to_tsp.py \
 
 ```bash
 python scripts/compute_ik_solutions.py \
-    --tsp_tour data/tour/tour_3000.h5 \
-    --output data/ik/ik_solutions_3000.h5 \
+    --tsp_tour data/tour/3000/tour.h5 \
+    --output data/ik/3000/ik_solutions.h5 \
     --robot ur20.yml
 ```
 
-**Output**: `data/ik/ik_solutions_3000.h5` containing all IK solutions + collision-free flags
+**Output**: `data/ik/3000/ik_solutions.h5` containing all IK solutions + collision-free flags
 
 **Requirements**: CuRobo only (no Isaac Sim!)
 
@@ -136,7 +140,7 @@ python scripts/compute_ik_solutions.py \
 
 ```bash
 python scripts/plan_trajectory.py \
-    --ik_solutions data/ik/ik_solutions_3000.h5 \
+    --ik_solutions data/ik/3000/ik_solutions.h5 \
     --method dp \
     --output data/trajectory/3000/joint_trajectory_dp.csv
 ```
@@ -153,17 +157,17 @@ python scripts/plan_trajectory.py \
 ```bash
 # Dynamic programming (optimal, default)
 python scripts/plan_trajectory.py \
-    --ik_solutions data/ik/ik_solutions_3000.h5 \
+    --ik_solutions data/ik/3000/ik_solutions.h5 \
     --method dp
 
 # Greedy nearest neighbor (faster)
 python scripts/plan_trajectory.py \
-    --ik_solutions data/ik/ik_solutions_3000.h5 \
+    --ik_solutions data/ik/3000/ik_solutions.h5 \
     --method greedy
 
 # Random selection (baseline)
 python scripts/plan_trajectory.py \
-    --ik_solutions data/ik/ik_solutions_3000.h5 \
+    --ik_solutions data/ik/3000/ik_solutions.h5 \
     --method random
 ```
 
@@ -214,7 +218,7 @@ Run steps 3-5 in one command:
 
 ```bash
 python scripts/run_full_pipeline.py \
-    --tsp_tour data/tour/tour_3000.h5 \
+    --tsp_tour data/tour/3000/tour.h5 \
     --method dp
 ```
 
@@ -231,7 +235,7 @@ This will:
 
 ```bash
 python scripts/run_full_pipeline.py \
-    --tsp_tour data/tour/tour_3000.h5 \
+    --tsp_tour data/tour/3000/tour.h5 \
     --method dp \
     --simulate
 ```
@@ -250,18 +254,18 @@ This will:
 ```bash
 # Skip IK computation if already done
 python scripts/run_full_pipeline.py \
-    --tsp_tour data/tour/tour_3000.h5 \
+    --tsp_tour data/tour/3000/tour.h5 \
     --method dp \
     --skip_ik \
-    --ik_solutions data/ik/ik_solutions_3000.h5
+    --ik_solutions data/ik/3000/ik_solutions.h5
 
 # Skip both IK and planning
 python scripts/run_full_pipeline.py \
-    --tsp_tour data/tour/tour_3000.h5 \
+    --tsp_tour data/tour/3000/tour.h5 \
     --method dp \
     --skip_ik \
     --skip_planning \
-    --ik_solutions data/ik/ik_solutions_3000.h5 \
+    --ik_solutions data/ik/3000/ik_solutions.h5 \
     --trajectory data/trajectory/3000/joint_trajectory_dp.csv \
     --simulate
 ```
@@ -346,7 +350,7 @@ To modify configuration, edit `common/config.py` or override via command-line ar
 
 1. **Reduce viewpoint count**: Use `--num_points` or adjust camera overlap
 2. **Use greedy IK selection**: `--method greedy` (faster than DP)
-3. **Disable 2-opt**: Set `--max_2opt_iterations 0` for TSP
+3. **Use faster TSP algorithm**: Set `--algorithm nn` for faster (but less optimal) tour
 4. **Skip simulation**: Omit `--simulate` flag for faster testing
 
 ---
@@ -400,12 +404,23 @@ python scripts/mesh_to_viewpoints.py \
 ### Compare TSP Algorithms
 
 ```bash
+# Try Nearest Neighbor only (fastest)
 python scripts/viewpoints_to_tsp.py \
-    --use_viewpoints data/viewpoint/viewpoints_3000.h5 \
+    --viewpoint_file data/viewpoint/3000/viewpoints.h5 \
+    --algorithm nn \
+    --num_starts 10
+
+# Try Random Insertion only (better quality)
+python scripts/viewpoints_to_tsp.py \
+    --viewpoint_file data/viewpoint/3000/viewpoints.h5 \
+    --algorithm ri \
+    --num_starts 10
+
+# Try both and select best (recommended)
+python scripts/viewpoints_to_tsp.py \
+    --viewpoint_file data/viewpoint/3000/viewpoints.h5 \
     --algorithm both \
-    --num_starts 20 \
-    --max_2opt_iterations 200 \
-    --visualize
+    --num_starts 20
 ```
 
 ### Compare Trajectory Planning Methods
@@ -415,12 +430,12 @@ Since IK computation is separate, you can quickly compare different planning met
 ```bash
 # Compute IK once
 python scripts/compute_ik_solutions.py \
-    --tsp_tour data/tour/tour_3000.h5
+    --tsp_tour data/tour/3000/tour.h5
 
 # Try all methods
-python scripts/plan_trajectory.py --ik_solutions data/ik/ik_solutions_*.h5 --method dp
-python scripts/plan_trajectory.py --ik_solutions data/ik/ik_solutions_*.h5 --method greedy
-python scripts/plan_trajectory.py --ik_solutions data/ik/ik_solutions_*.h5 --method random
+python scripts/plan_trajectory.py --ik_solutions data/ik/3000/ik_solutions.h5 --method dp
+python scripts/plan_trajectory.py --ik_solutions data/ik/3000/ik_solutions.h5 --method greedy
+python scripts/plan_trajectory.py --ik_solutions data/ik/3000/ik_solutions.h5 --method random
 
 # Compare results
 cat data/trajectory/3000/joint_trajectory_*_reconfig.txt
@@ -520,7 +535,7 @@ python scripts/viewpoints_to_tsp.py ...
 
 # Step 3 (monolithic, requires Isaac Sim)
 omni_python scripts/run_app_v3.py \
-    --tsp_tour_path data/tour/tour_3000.h5 \
+    --tsp_tour_path data/tour/3000/tour.h5 \
     --selection_method dp
 ```
 
@@ -533,7 +548,7 @@ python scripts/viewpoints_to_tsp.py ...
 
 # Steps 3-5 (modular, Isaac Sim optional)
 python scripts/run_full_pipeline.py \
-    --tsp_tour data/tour/tour_3000.h5 \
+    --tsp_tour data/tour/3000/tour.h5 \
     --method dp \
     --simulate  # Optional
 ```

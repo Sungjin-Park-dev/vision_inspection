@@ -10,21 +10,21 @@ This script runs the complete pipeline in sequence:
 Usage:
     # Run full pipeline with simulation
     python scripts/run_full_pipeline.py \\
-        --tsp_tour data/tour/tour_3000.h5 \\
+        --tsp_tour data/tour/3000/tour.h5 \\
         --method dp \\
         --simulate
 
     # Run without simulation (no Isaac Sim needed!)
     python scripts/run_full_pipeline.py \\
-        --tsp_tour data/tour/tour_3000.h5 \\
+        --tsp_tour data/tour/3000/tour.h5 \\
         --method dp
 
     # Run only specific stages
     python scripts/run_full_pipeline.py \\
-        --tsp_tour data/tour/tour_3000.h5 \\
+        --tsp_tour data/tour/3000/tour.h5 \\
         --method dp \\
         --skip_ik \\
-        --ik_solutions data/ik/ik_solutions_3000.h5
+        --ik_solutions data/ik/3000/ik_solutions.h5
 """
 
 # ============================================================================
@@ -221,12 +221,11 @@ def main():
 
     # Determine paths
     num_points = extract_num_points(args.tsp_tour)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if args.ik_solutions is None:
-        ik_dir = "data/ik"
+        ik_dir = f"data/ik/{num_points}"
         os.makedirs(ik_dir, exist_ok=True)
-        ik_solutions_path = f"{ik_dir}/ik_solutions_{num_points}_{timestamp}.h5"
+        ik_solutions_path = f"{ik_dir}/ik_solutions.h5"
     else:
         ik_solutions_path = args.ik_solutions
 

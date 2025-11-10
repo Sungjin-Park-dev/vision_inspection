@@ -257,6 +257,14 @@ class SimulationConfig:
     table_dimensions: np.ndarray = field(default_factory=lambda: config.TABLE_DIMENSIONS.copy())
     glass_position: np.ndarray = field(default_factory=lambda: config.GLASS_POSITION.copy())
 
+    # Additional obstacles (defaults from common.config)
+    wall_position: np.ndarray = field(default_factory=lambda: config.WALL_POSITION.copy())
+    wall_dimensions: np.ndarray = field(default_factory=lambda: config.WALL_DIMENSIONS.copy())
+    workbench_position: np.ndarray = field(default_factory=lambda: config.WORKBENCH_POSITION.copy())
+    workbench_dimensions: np.ndarray = field(default_factory=lambda: config.WORKBENCH_DIMENSIONS.copy())
+    robot_mount_position: np.ndarray = field(default_factory=lambda: config.ROBOT_MOUNT_POSITION.copy())
+    robot_mount_dimensions: np.ndarray = field(default_factory=lambda: config.ROBOT_MOUNT_DIMENSIONS.copy())
+
     # IK Solver configuration (defaults from common.config)
     ik_rotation_threshold: float = config.IK_ROTATION_THRESHOLD
     ik_position_threshold: float = config.IK_POSITION_THRESHOLD
@@ -780,6 +788,45 @@ def setup_collision_checker(
     )
     world_cfg_table.cuboid[0].pose[:3] = config.table_position
     world_cfg_table.cuboid[0].dims[:3] = config.table_dimensions
+    world_cfg_table.cuboid[0].name = "table"
+
+    # Add wall cuboid
+    wall_cuboid_dict = {
+        "table": {
+            "dims": config.wall_dimensions.tolist(),
+            "pose": list(config.wall_position) + [1, 0, 0, 0]
+        }
+    }
+    wall_cfg = WorldConfig.from_dict({"cuboid": wall_cuboid_dict})
+    wall_cfg.cuboid[0].name = "wall"
+
+    # Add workbench cuboid
+    workbench_cuboid_dict = {
+        "table": {
+            "dims": config.workbench_dimensions.tolist(),
+            "pose": list(config.workbench_position) + [1, 0, 0, 0]
+        }
+    }
+    workbench_cfg = WorldConfig.from_dict({"cuboid": workbench_cuboid_dict})
+    workbench_cfg.cuboid[0].name = "workbench"
+
+    # Add robot mount cuboid
+    robot_mount_cuboid_dict = {
+        "table": {
+            "dims": config.robot_mount_dimensions.tolist(),
+            "pose": list(config.robot_mount_position) + [1, 0, 0, 0]
+        }
+    }
+    robot_mount_cfg = WorldConfig.from_dict({"cuboid": robot_mount_cuboid_dict})
+    robot_mount_cfg.cuboid[0].name = "robot_mount"
+
+    # Combine all cuboids
+    all_cuboids = (
+        world_cfg_table.cuboid +
+        wall_cfg.cuboid +
+        workbench_cfg.cuboid +
+        robot_mount_cfg.cuboid
+    )
 
     world_cfg1 = WorldConfig.from_dict(
         load_yaml(join_path(get_world_configs_path(), "collision_table.yml"))
@@ -787,7 +834,7 @@ def setup_collision_checker(
     world_cfg1.mesh[0].name += "_mesh"
     world_cfg1.mesh[0].pose[2] = -10.5
 
-    world_cfg = WorldConfig(cuboid=world_cfg_table.cuboid, mesh=world_cfg1.mesh)
+    world_cfg = WorldConfig(cuboid=all_cuboids, mesh=world_cfg1.mesh)
 
     # Create IK solver
     n_obstacle_cuboids = 30

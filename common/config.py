@@ -80,6 +80,28 @@ TABLE_POSITION = np.array([0.7, 0.0, 0.0], dtype=np.float64)
 # Table cuboid dimensions (x, y, z) in meters
 TABLE_DIMENSIONS = np.array([0.6, 1.0, 1.1], dtype=np.float64)
 
+# Wall (Fence) cuboid position in world frame (x, y, z)
+# Positioned behind the robot as a safety barrier
+WALL_POSITION = np.array([-0.6, 0.0, 0.5], dtype=np.float64)
+
+# Wall cuboid dimensions (x, y, z) in meters
+# Thin wall (x=thickness, y=width, z=height)
+WALL_DIMENSIONS = np.array([0.1, 2.0, 1.0], dtype=np.float64)
+
+# Workbench cuboid position in world frame (x, y, z)
+# Additional work surface next to main table
+WORKBENCH_POSITION = np.array([0.5, -0.7, 0.4], dtype=np.float64)
+
+# Workbench cuboid dimensions (x, y, z) in meters
+WORKBENCH_DIMENSIONS = np.array([0.8, 0.6, 0.8], dtype=np.float64)
+
+# Robot mount (base) cuboid position in world frame (x, y, z)
+# Platform underneath the robot base
+ROBOT_MOUNT_POSITION = np.array([0.0, 0.0, -0.05], dtype=np.float64)
+
+# Robot mount cuboid dimensions (x, y, z) in meters
+ROBOT_MOUNT_DIMENSIONS = np.array([0.3, 0.3, 0.1], dtype=np.float64)
+
 
 # ============================================================================
 # File Paths
@@ -208,6 +230,12 @@ def print_config_summary():
     print(f"  Glass position: {GLASS_POSITION}")
     print(f"  Table position: {TABLE_POSITION}")
     print(f"  Table dimensions: {TABLE_DIMENSIONS}")
+    print(f"  Wall position: {WALL_POSITION}")
+    print(f"  Wall dimensions: {WALL_DIMENSIONS}")
+    print(f"  Workbench position: {WORKBENCH_POSITION}")
+    print(f"  Workbench dimensions: {WORKBENCH_DIMENSIONS}")
+    print(f"  Robot mount position: {ROBOT_MOUNT_POSITION}")
+    print(f"  Robot mount dimensions: {ROBOT_MOUNT_DIMENSIONS}")
 
     print("\nAlgorithm Parameters:")
     print(f"  Interpolation steps: {INTERPOLATION_STEPS}")

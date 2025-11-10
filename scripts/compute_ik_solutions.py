@@ -80,6 +80,14 @@ class ComputeConfig:
     glass_position: np.ndarray = field(default_factory=lambda: config.GLASS_POSITION.copy())
     glass_mesh_file: str = config.DEFAULT_MESH_FILE
 
+    # Additional obstacles
+    wall_position: np.ndarray = field(default_factory=lambda: config.WALL_POSITION.copy())
+    wall_dimensions: np.ndarray = field(default_factory=lambda: config.WALL_DIMENSIONS.copy())
+    workbench_position: np.ndarray = field(default_factory=lambda: config.WORKBENCH_POSITION.copy())
+    workbench_dimensions: np.ndarray = field(default_factory=lambda: config.WORKBENCH_DIMENSIONS.copy())
+    robot_mount_position: np.ndarray = field(default_factory=lambda: config.ROBOT_MOUNT_POSITION.copy())
+    robot_mount_dimensions: np.ndarray = field(default_factory=lambda: config.ROBOT_MOUNT_DIMENSIONS.copy())
+
     # IK solver configuration
     ik_rotation_threshold: float = config.IK_ROTATION_THRESHOLD
     ik_position_threshold: float = config.IK_POSITION_THRESHOLD
@@ -309,7 +317,7 @@ def setup_collision_world(cfg: ComputeConfig) -> WorldConfig:
         cfg: Computation configuration
 
     Returns:
-        WorldConfig with table and glass obstacles
+        WorldConfig with table, glass, and additional obstacles
     """
     print(f"\n{'='*60}")
     print("SETTING UP COLLISION WORLD")
@@ -321,9 +329,49 @@ def setup_collision_world(cfg: ComputeConfig) -> WorldConfig:
     )
     world_cfg_table.cuboid[0].pose[:3] = cfg.table_position
     world_cfg_table.cuboid[0].dims[:3] = cfg.table_dimensions
+    world_cfg_table.cuboid[0].name = "table"
 
     print(f"Table position: {cfg.table_position}")
     print(f"Table dimensions: {cfg.table_dimensions}")
+
+    # Add wall cuboid
+    wall_cuboid_dict = {
+        "table": {
+            "dims": cfg.wall_dimensions.tolist(),
+            "pose": list(cfg.wall_position) + [1, 0, 0, 0]
+        }
+    }
+    wall_cfg = WorldConfig.from_dict({"cuboid": wall_cuboid_dict})
+    wall_cfg.cuboid[0].name = "wall"
+
+    print(f"Wall position: {cfg.wall_position}")
+    print(f"Wall dimensions: {cfg.wall_dimensions}")
+
+    # Add workbench cuboid
+    workbench_cuboid_dict = {
+        "table": {
+            "dims": cfg.workbench_dimensions.tolist(),
+            "pose": list(cfg.workbench_position) + [1, 0, 0, 0]
+        }
+    }
+    workbench_cfg = WorldConfig.from_dict({"cuboid": workbench_cuboid_dict})
+    workbench_cfg.cuboid[0].name = "workbench"
+
+    print(f"Workbench position: {cfg.workbench_position}")
+    print(f"Workbench dimensions: {cfg.workbench_dimensions}")
+
+    # Add robot mount cuboid
+    robot_mount_cuboid_dict = {
+        "table": {
+            "dims": cfg.robot_mount_dimensions.tolist(),
+            "pose": list(cfg.robot_mount_position) + [1, 0, 0, 0]
+        }
+    }
+    robot_mount_cfg = WorldConfig.from_dict({"cuboid": robot_mount_cuboid_dict})
+    robot_mount_cfg.cuboid[0].name = "robot_mount"
+
+    print(f"Robot mount position: {cfg.robot_mount_position}")
+    print(f"Robot mount dimensions: {cfg.robot_mount_dimensions}")
 
     # Add glass mesh
     glass_mesh = Mesh(
@@ -336,9 +384,16 @@ def setup_collision_world(cfg: ComputeConfig) -> WorldConfig:
     print(f"Glass position: {cfg.glass_position}")
     print(f"{'='*60}\n")
 
-    # Combine table cuboid and glass mesh
+    # Combine all cuboids and glass mesh
+    all_cuboids = (
+        world_cfg_table.cuboid +
+        wall_cfg.cuboid +
+        workbench_cfg.cuboid +
+        robot_mount_cfg.cuboid
+    )
+
     world_cfg = WorldConfig(
-        cuboid=world_cfg_table.cuboid,
+        cuboid=all_cuboids,
         mesh=[glass_mesh]
     )
 
@@ -547,7 +602,7 @@ def main():
         "--output",
         type=str,
         default=None,
-        help="Output path for IK solutions HDF5 file (default: auto-generated)"
+        help="Output path for IK solutions HDF5 file (default: data/ik/{num_points}/ik_solutions.h5)"
     )
     parser.add_argument(
         "--robot",
@@ -579,10 +634,9 @@ def main():
     # Determine output path
     if cfg.output_path is None:
         num_points = tsp_result['metadata']['num_points']
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = 'data/ik'
+        output_dir = f'data/ik/{num_points}'
         os.makedirs(output_dir, exist_ok=True)
-        output_path = f'{output_dir}/ik_solutions_{num_points}_{timestamp}.h5'
+        output_path = f'{output_dir}/ik_solutions.h5'
     else:
         output_path = cfg.output_path
 
