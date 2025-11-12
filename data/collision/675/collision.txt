@@ -1,0 +1,155 @@
+=== Collision Report @ 2025-11-12 05:05:08 ===
+Trajectory: data/trajectory/675/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/glass_zup.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps: 5
+
+Total waypoints: 675
+Total configurations checked: 3483
+Collisions at waypoints: 0
+Segment collisions (raw count): 8
+Total collisions: 8
+Collision-free configurations: 3475
+Collision rate (%): 0.20
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 453->454, 469->470, 496->497
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 11
+  Reconfiguration rate: 1.6%
+  Reconfiguration segments: 19, 142, 170, 238, 256, 263, 437, 469, 544, 563, 595
+
+Collisions by link: None
+
+Occurrence Counts:
+  Collisions: 8
+  Reconfigurations: 11
+
+Timing (wall-clock):
+  Collision check:         4.228 s
+  Reconfiguration check:  0.001 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          4.242 s
+
+=== Collision Report @ 2025-11-12 05:06:56 ===
+Trajectory: data/trajectory/675/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/glass_zup.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps: 10
+
+Total waypoints: 675
+Total configurations checked: 6802
+Collisions at waypoints: 0
+Segment collisions (raw count): 16
+Total collisions: 16
+Collision-free configurations: 6786
+Collision rate (%): 0.22
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 494->495, 495->496, 511->512, 512->513, 541->542
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 11
+  Reconfiguration rate: 1.6%
+  Reconfiguration segments: 19, 142, 170, 238, 256, 263, 437, 469, 544, 563, 595
+
+Collisions by link: None
+
+Occurrence Counts:
+  Collisions: 16
+  Reconfigurations: 11
+
+Timing (wall-clock):
+  Collision check:         8.145 s
+  Reconfiguration check:  0.001 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          8.159 s
+
+=== Collision Report @ 2025-11-12 05:21:49 ===
+Trajectory: data/trajectory/675/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/glass_zup.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps: 3
+
+Total waypoints: 675
+Total configurations checked: 2191
+Collisions at waypoints: 0
+Segment collisions (raw count): 6
+Total collisions: 6
+Collision-free configurations: 2185
+Collision rate (%): 0.22
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 408->409, 422->423, 446->447
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 11
+  Reconfiguration rate: 1.6%
+  Reconfiguration segments: 19, 142, 170, 238, 256, 263, 437, 469, 544, 563, 595
+
+Collisions by link: None
+
+Occurrence Counts:
+  Collisions: 6
+  Reconfigurations: 11
+
+Timing (wall-clock):
+  Collision check:         0.783 s
+  Reconfiguration check:  0.002 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          0.797 s
+
+=== Collision Report @ 2025-11-12 05:21:59 ===
+Trajectory: data/trajectory/675/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/glass_zup.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps: 3
+
+Total waypoints: 675
+Total configurations checked: 2191
+Collisions at waypoints: 0
+Segment collisions (raw count): 6
+Total collisions: 6
+Collision-free configurations: 2185
+Collision rate (%): 0.22
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 408->409, 422->423, 446->447
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 11
+  Reconfiguration rate: 1.6%
+  Reconfiguration segments: 19, 142, 170, 238, 256, 263, 437, 469, 544, 563, 595
+
+Collisions by link: None
+
+Occurrence Counts:
+  Collisions: 6
+  Reconfigurations: 11
+
+Timing (wall-clock):
+  Collision check:         0.779 s
+  Reconfiguration check:  0.002 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          0.793 s

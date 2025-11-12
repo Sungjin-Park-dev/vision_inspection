@@ -3,123 +3,116 @@ Joint Reconfiguration Analysis Results
 
 Input file: data/trajectory/2446/joint_trajectory_dp.csv
 Threshold: 1.000 radians
-Total timesteps: 2385
-Total reconfigurations: 105
-Reconfiguration rate: 4.4%
+Total timesteps: 2446
+Total reconfigurations: 98
+Reconfiguration rate: 4.0%
 
 Per-joint statistics:
-ur20-shoulder_pan_joint: 9 reconfigurations, max change: 2.985 rad
-ur20-shoulder_lift_joint: 10 reconfigurations, max change: 5.072 rad
-ur20-elbow_joint: 4 reconfigurations, max change: 2.724 rad
-ur20-wrist_1_joint: 15 reconfigurations, max change: 4.852 rad
-ur20-wrist_2_joint: 10 reconfigurations, max change: 3.594 rad
-ur20-wrist_3_joint: 93 reconfigurations, max change: 3.225 rad
+ur20-shoulder_pan_joint: 1 reconfigurations, max change: 2.814 rad
+ur20-shoulder_lift_joint: 1 reconfigurations, max change: 2.023 rad
+ur20-elbow_joint: 1 reconfigurations, max change: 2.644 rad
+ur20-wrist_1_joint: 6 reconfigurations, max change: 3.553 rad
+ur20-wrist_2_joint: 4 reconfigurations, max change: 3.425 rad
+ur20-wrist_3_joint: 93 reconfigurations, max change: 3.178 rad
 
 All Reconfiguration Timesteps:
 Timestep   Max Change   Joints Involved               
 ------------------------------------------------------------
 34         2.148        wrist_3
-35         2.192        wrist_3
-36         2.181        wrist_3
+35         2.193        wrist_3
+36         2.182        wrist_3
 48         1.952        wrist_3
-49         1.961        wrist_3
-53         1.864        wrist_3
-56         1.847        wrist_3
+49         1.962        wrist_3
+53         1.866        wrist_3
+56         1.848        wrist_3
 59         1.647        wrist_3
 62         1.689        wrist_3
 63         1.741        wrist_3
 79         1.667        wrist_3
 80         1.564        wrist_3
-82         1.538        wrist_3
+82         1.539        wrist_3
 84         1.451        wrist_3
-89         1.380        wrist_3
+89         1.381        wrist_3
 91         1.387        wrist_3
-93         1.082        wrist_1
-242        3.195        wrist_1, wrist_2, wrist_3
+93         1.061        wrist_1
+242        1.177        wrist_3
 246        1.150        wrist_3
-250        1.112        wrist_3
+250        1.113        wrist_3
+272        3.171        wrist_1, wrist_2, wrist_3
 445        1.010        wrist_3
 447        1.075        wrist_3
 453        1.137        wrist_3
-456        3.240        shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2
+456        1.184        wrist_3
 464        1.214        wrist_3
-467        1.390        wrist_3
-471        1.446        wrist_3
-472        1.455        wrist_3
-473        1.446        wrist_3
+467        1.388        wrist_3
+471        1.441        wrist_3
+472        1.454        wrist_3
+473        1.445        wrist_3
 477        1.604        wrist_3
-486        3.284        shoulder_pan, shoulder_lift, wrist_1, wrist_2
-491        3.274        shoulder_pan, shoulder_lift, wrist_1, wrist_2
-504        3.268        shoulder_pan, shoulder_lift, wrist_1, wrist_2
-643        3.248        shoulder_pan, shoulder_lift, wrist_1, wrist_2
-676        4.852        shoulder_pan, shoulder_lift, wrist_1, wrist_3
-775        2.998        wrist_1, wrist_2, wrist_3
-854        1.049        wrist_3
-899        1.193        wrist_3
-950        1.405        wrist_3
-951        1.742        wrist_3
-953        2.453        wrist_3
-956        2.852        wrist_3
-959        2.844        wrist_3
-962        2.938        wrist_3
-1006       2.998        wrist_3
-1007       2.928        wrist_3
-1008       2.921        wrist_3
-1030       3.042        wrist_3
-1039       3.436        elbow, wrist_1, wrist_2
-1048       3.091        wrist_3
-1067       2.912        wrist_3
-1068       2.923        wrist_3
-1069       2.935        wrist_3
-1134       1.391        wrist_3
-1137       1.232        wrist_3
-1141       1.084        wrist_3
-1157       2.083        wrist_3
-1159       2.914        wrist_3
-1437       2.843        shoulder_pan, shoulder_lift, wrist_1
-1628       5.072        shoulder_lift, elbow, wrist_1
-1834       3.594        shoulder_pan, shoulder_lift, wrist_1, wrist_2
-2026       1.683        wrist_3
-2034       1.825        wrist_3
-2039       1.901        wrist_3
-2045       2.144        wrist_3
-2047       2.131        wrist_3
-2049       2.020        wrist_3
-2057       2.211        wrist_3
-2058       2.269        wrist_3
-2060       2.148        wrist_3
-2066       2.323        wrist_3
-2067       2.326        wrist_3
-2072       2.404        wrist_3
-2074       2.351        wrist_3
-2075       2.423        wrist_3
-2082       2.500        wrist_3
-2090       2.618        wrist_3
-2091       2.618        wrist_3
-2092       2.546        wrist_3
-2097       2.615        wrist_3
-2104       2.701        wrist_3
-2117       2.847        wrist_3
-2127       2.959        wrist_3
-2152       3.080        wrist_3
-2153       3.063        wrist_3
-2155       3.358        elbow, wrist_1, wrist_2
-2163       3.163        wrist_3
-2165       3.128        wrist_3
-2166       3.074        wrist_3
-2167       3.073        wrist_3
-2172       3.038        wrist_3
-2174       3.013        wrist_3
-2175       3.069        wrist_3
-2179       2.884        wrist_3
-2184       2.858        wrist_3
-2186       2.786        wrist_3
-2196       2.737        wrist_3
-2199       2.619        wrist_3
-2203       2.616        wrist_3
-2208       2.474        wrist_3
-2220       2.393        wrist_3
-2221       2.399        wrist_3
-2222       2.315        wrist_3
-2223       2.327        wrist_3
-2224       3.114        shoulder_pan, shoulder_lift, wrist_1
+879        1.048        wrist_3
+924        1.193        wrist_3
+975        1.405        wrist_3
+976        1.741        wrist_3
+978        2.451        wrist_3
+981        2.851        wrist_3
+984        2.842        wrist_3
+987        2.937        wrist_3
+1031       2.997        wrist_3
+1032       2.928        wrist_3
+1033       2.920        wrist_3
+1055       3.041        wrist_3
+1064       3.114        wrist_3
+1073       3.553        wrist_1, wrist_2
+1092       2.913        wrist_3
+1093       2.924        wrist_3
+1094       2.937        wrist_3
+1159       1.390        wrist_3
+1162       1.231        wrist_3
+1166       1.082        wrist_3
+1182       2.082        wrist_3
+1184       2.915        wrist_3
+1462       2.814        shoulder_pan, shoulder_lift, elbow, wrist_1
+2087       1.684        wrist_3
+2095       1.840        wrist_3
+2100       1.930        wrist_3
+2106       2.152        wrist_3
+2108       2.136        wrist_3
+2110       2.042        wrist_3
+2118       2.226        wrist_3
+2119       2.274        wrist_3
+2121       2.161        wrist_3
+2127       2.326        wrist_3
+2128       2.331        wrist_3
+2133       2.407        wrist_3
+2135       2.361        wrist_3
+2136       2.427        wrist_3
+2143       2.501        wrist_3
+2151       2.620        wrist_3
+2152       2.617        wrist_3
+2153       2.548        wrist_3
+2158       2.615        wrist_3
+2165       2.699        wrist_3
+2178       2.845        wrist_3
+2188       2.949        wrist_3
+2213       3.064        wrist_3
+2214       3.056        wrist_3
+2216       3.025        wrist_3
+2224       2.790        wrist_1, wrist_2
+2226       3.140        wrist_3
+2227       3.080        wrist_3
+2228       3.078        wrist_3
+2233       3.050        wrist_3
+2235       3.015        wrist_3
+2236       3.178        wrist_3
+2240       2.908        wrist_3
+2245       2.904        wrist_3
+2247       2.796        wrist_3
+2257       2.744        wrist_3
+2260       2.632        wrist_3
+2264       2.629        wrist_3
+2269       2.486        wrist_3
+2281       2.418        wrist_3
+2282       2.423        wrist_3
+2283       2.321        wrist_3
+2284       2.331        wrist_3
+2285       2.753        wrist_1, wrist_2

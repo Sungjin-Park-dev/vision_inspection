@@ -34,6 +34,8 @@ import pinocchio as pin
 from pathlib import Path
 from datetime import datetime
 import yaml
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 try:
     import torch
@@ -72,6 +74,46 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Import common utilities
 from common import config
 from common.interpolation_utils import generate_interpolated_path
+
+
+# Global variable for worker processes (to avoid pickling large objects)
+_worker_checker = None
+
+
+def _init_worker(checker_args):
+    """
+    Initialize collision checker in each worker process.
+
+    This is called once per worker to set up the collision checker instance.
+    Avoids pickling the large COALCollisionChecker object.
+
+    Args:
+        checker_args: Dictionary with initialization arguments for COALCollisionChecker
+    """
+    global _worker_checker
+    _worker_checker = COALCollisionChecker(**checker_args)
+
+
+def _check_collision_worker(config_data):
+    """
+    Worker function for parallel collision checking.
+
+    Args:
+        config_data: Tuple of (index, joint_config, show_link_collisions)
+
+    Returns:
+        Tuple of (index, is_collision, distance, link_info)
+    """
+    global _worker_checker
+    idx, joint_config, show_link_collisions = config_data
+
+    is_collision, dist, link_info = _worker_checker.check_collision_single_config(
+        joint_config,
+        return_distance=True,
+        return_link_info=show_link_collisions
+    )
+
+    return (idx, is_collision, dist, link_info)
 
 
 class COALCollisionChecker:
@@ -798,7 +840,9 @@ class COALCollisionChecker:
         interpolate: bool = True,
         num_interp_steps: int = 10,
         check_reconfig: bool = True,
-        reconfig_threshold: float = 1.0
+        reconfig_threshold: float = 1.0,
+        parallel: bool = False,
+        num_workers: Optional[int] = None
     ) -> dict:
         """
         Check collisions and reconfigurations along entire trajectory
@@ -812,6 +856,8 @@ class COALCollisionChecker:
             num_interp_steps: Number of interpolation steps between waypoints
             check_reconfig: If True, also check for joint reconfigurations
             reconfig_threshold: Threshold for joint reconfigurations in radians
+            parallel: If True, use multiprocessing for collision checking
+            num_workers: Number of worker processes (default: cpu_count() - 2)
 
         Returns:
             Dictionary with collision and reconfiguration statistics
@@ -824,6 +870,23 @@ class COALCollisionChecker:
         collision_segments = []  # List of (waypoint_idx, alpha) tuples for interpolated collisions
         link_collision_counter = Counter()
         collision_timer_start = time.perf_counter()
+
+        # Determine if parallel processing should be used
+        use_parallel = parallel
+        if use_parallel:
+            # Safety checks for parallel mode
+            if num_waypoints < 500:
+                if verbose:
+                    print(f"  Note: Trajectory too small ({num_waypoints} waypoints) for parallel speedup")
+                    print(f"  Using sequential processing instead")
+                use_parallel = False
+            elif num_workers is None:
+                num_workers = max(1, cpu_count() - 2)
+                if verbose:
+                    print(f"  Parallel mode: Using {num_workers} workers (auto-detected)")
+            else:
+                if verbose:
+                    print(f"  Parallel mode: Using {num_workers} workers")
 
         # Pre-compute all interpolations using batch processing if enabled
         interpolated_configs_map = None
@@ -857,106 +920,189 @@ class COALCollisionChecker:
         shown_count = 0
         configs_checked = 0
 
-        # Check all waypoints
-        for i, joint_config in enumerate(trajectory):
-            is_collision, dist, link_info = self.check_collision_single_config(
-                joint_config,
-                return_distance=True,
-                return_link_info=show_link_collisions
-            )
-            configs_checked += 1
+        # === PARALLEL COLLISION CHECKING ===
+        if use_parallel:
+            # Collect all configurations to check
+            all_configs = []
+            config_metadata = []  # (type, waypoint_idx, segment_idx, interp_idx, alpha)
 
-            if is_collision:
-                collision_indices.append(i)
+            # Add all waypoint configs
+            for i, joint_config in enumerate(trajectory):
+                all_configs.append(joint_config)
+                config_metadata.append(('waypoint', i, None, None, None))
 
-                # Collect link collision statistics
-                if show_link_collisions and link_info:
-                    colliding_links = [info['link_name'] for info in link_info if info['collision']]
-                    for link_name in colliding_links:
-                        link_collision_counter[link_name] += 1
-
-                    # Show detailed info for first few collisions
-                    if shown_count < max_show:
-                        print(f"\n  Waypoint {i}: COLLISION")
-                        print(f"    Colliding links: {', '.join(colliding_links)}")
-                        shown_count += 1
-            else:
-                collision_free_indices.append(i)
-
-            # Check interpolated segments if enabled
-            if interpolate and i < num_waypoints - 1:
-                # Use pre-computed batch results if available, otherwise fallback to per-segment
-                if interpolated_configs_map is not None:
-                    # Fast path: use pre-computed interpolations
-                    interpolated_list = interpolated_configs_map.get(i, [])
+            # Add all interpolated configs
+            if interpolate and interpolated_configs_map is not None:
+                for seg_idx in range(num_waypoints - 1):
+                    interpolated_list = interpolated_configs_map.get(seg_idx, [])
                     for interp_idx, interp_config in interpolated_list:
-                        is_collision, dist, link_info = self.check_collision_single_config(
-                            interp_config,
-                            return_distance=True,
-                            return_link_info=show_link_collisions
-                        )
-                        configs_checked += 1
+                        all_configs.append(interp_config)
+                        alpha = (interp_idx + 1) / (num_interp_steps + 1)
+                        config_metadata.append(('segment', seg_idx, seg_idx, interp_idx, alpha))
 
-                        if is_collision:
-                            # Calculate alpha value for this interpolation point
-                            alpha = (interp_idx + 1) / (num_interp_steps + 1)
-                            collision_segments.append((i, alpha))
+            # Prepare worker arguments (avoid pickling self)
+            checker_args = {
+                'robot_urdf_path': self.robot_urdf_path,
+                'obstacle_mesh_paths': [str(p) for p in self.obstacle_meshes] if hasattr(self.obstacle_meshes[0], '__fspath__') else self.obstacle_meshes,
+                'glass_position': self.glass_position,
+                'table_position': self.table_position,
+                'table_dimensions': self.table_dimensions,
+                'wall_position': self.wall_position,
+                'wall_dimensions': self.wall_dimensions,
+                'workbench_position': self.workbench_position,
+                'workbench_dimensions': self.workbench_dimensions,
+                'robot_mount_position': self.robot_mount_position,
+                'robot_mount_dimensions': self.robot_mount_dimensions,
+                'robot_config_path': self.robot_config_path,
+                'use_capsules': self.use_capsules,
+                'capsule_radius': self.capsule_radius,
+                'use_link_meshes': self.use_link_meshes,
+                'mesh_base_path': self.mesh_base_path,
+                'collision_margin': self.collision_margin,
+            }
 
-                            # Collect link collision statistics
-                            if show_link_collisions and link_info:
-                                colliding_links = [info['link_name'] for info in link_info if info['collision']]
-                                for link_name in colliding_links:
-                                    link_collision_counter[link_name] += 1
+            # Create work items
+            work_items = [(i, config, show_link_collisions) for i, config in enumerate(all_configs)]
 
-                                # Show detailed info for first few collisions
-                                if shown_count < max_show:
-                                    print(f"\n  Segment {i}→{i+1} (α={alpha:.2f}): COLLISION")
-                                    print(f"    Colliding links: {', '.join(colliding_links)}")
-                                    shown_count += 1
+            # Process in parallel
+            if verbose:
+                print(f"  Checking {len(all_configs)} configurations in parallel...")
+
+            try:
+                with Pool(processes=num_workers, initializer=_init_worker, initargs=(checker_args,)) as pool:
+                    results_list = pool.map(_check_collision_worker, work_items, chunksize=max(1, len(work_items) // (num_workers * 4)))
+
+                configs_checked = len(results_list)
+
+                # Process results
+                for (idx, is_collision, dist, link_info) in results_list:
+                    meta_type, wp_idx, seg_idx, interp_idx, alpha = config_metadata[idx]
+
+                    if is_collision:
+                        if meta_type == 'waypoint':
+                            collision_indices.append(wp_idx)
+                        else:  # segment
+                            collision_segments.append((seg_idx, alpha))
+
+                        # Collect link collision statistics
+                        if show_link_collisions and link_info:
+                            colliding_links = [info['link_name'] for info in link_info if info['collision']]
+                            for link_name in colliding_links:
+                                link_collision_counter[link_name] += 1
+                    else:
+                        if meta_type == 'waypoint':
+                            collision_free_indices.append(wp_idx)
+
+                if verbose:
+                    print(f"  Parallel checking completed: {configs_checked} configurations")
+
+            except Exception as e:
+                print(f"  Warning: Parallel processing failed ({e})")
+                print(f"  Falling back to sequential processing...")
+                use_parallel = False
+
+        # === SEQUENTIAL COLLISION CHECKING ===
+        if not use_parallel:
+            # Check all waypoints
+            for i, joint_config in enumerate(trajectory):
+                is_collision, dist, link_info = self.check_collision_single_config(
+                    joint_config,
+                    return_distance=True,
+                    return_link_info=show_link_collisions
+                )
+                configs_checked += 1
+
+                if is_collision:
+                    collision_indices.append(i)
+
+                    # Collect link collision statistics
+                    if show_link_collisions and link_info:
+                        colliding_links = [info['link_name'] for info in link_info if info['collision']]
+                        for link_name in colliding_links:
+                            link_collision_counter[link_name] += 1
+
+                        # Show detailed info for first few collisions
+                        if shown_count < max_show:
+                            print(f"\n  Waypoint {i}: COLLISION")
+                            print(f"    Colliding links: {', '.join(colliding_links)}")
+                            shown_count += 1
                 else:
-                    # Fallback path: compute interpolations per-segment
-                    start_config = trajectory[i]
-                    end_config = trajectory[i + 1]
+                    collision_free_indices.append(i)
 
-                    # Generate interpolated path
-                    interpolated_configs = self._generate_segment_interpolation(
-                        start_config, end_config, num_interp_steps
-                    )
+                # Check interpolated segments if enabled
+                if interpolate and i < num_waypoints - 1:
+                    # Use pre-computed batch results if available, otherwise fallback to per-segment
+                    if interpolated_configs_map is not None:
+                        # Fast path: use pre-computed interpolations
+                        interpolated_list = interpolated_configs_map.get(i, [])
+                        for interp_idx, interp_config in interpolated_list:
+                            is_collision, dist, link_info = self.check_collision_single_config(
+                                interp_config,
+                                return_distance=True,
+                                return_link_info=show_link_collisions
+                            )
+                            configs_checked += 1
 
-                    # Check each interpolated configuration
-                    for interp_idx, interp_config in enumerate(interpolated_configs):
-                        is_collision, dist, link_info = self.check_collision_single_config(
-                            interp_config,
-                            return_distance=True,
-                            return_link_info=show_link_collisions
+                            if is_collision:
+                                # Calculate alpha value for this interpolation point
+                                alpha = (interp_idx + 1) / (num_interp_steps + 1)
+                                collision_segments.append((i, alpha))
+
+                                # Collect link collision statistics
+                                if show_link_collisions and link_info:
+                                    colliding_links = [info['link_name'] for info in link_info if info['collision']]
+                                    for link_name in colliding_links:
+                                        link_collision_counter[link_name] += 1
+
+                                    # Show detailed info for first few collisions
+                                    if shown_count < max_show:
+                                        print(f"\n  Segment {i}→{i+1} (α={alpha:.2f}): COLLISION")
+                                        print(f"    Colliding links: {', '.join(colliding_links)}")
+                                        shown_count += 1
+                    else:
+                        # Fallback path: compute interpolations per-segment
+                        start_config = trajectory[i]
+                        end_config = trajectory[i + 1]
+
+                        # Generate interpolated path
+                        interpolated_configs = self._generate_segment_interpolation(
+                            start_config, end_config, num_interp_steps
                         )
-                        configs_checked += 1
 
-                        if is_collision:
-                            # Calculate alpha value for this interpolation point
-                            alpha = (interp_idx + 1) / (num_interp_steps + 1)
-                            collision_segments.append((i, alpha))
+                        # Check each interpolated configuration
+                        for interp_idx, interp_config in enumerate(interpolated_configs):
+                            is_collision, dist, link_info = self.check_collision_single_config(
+                                interp_config,
+                                return_distance=True,
+                                return_link_info=show_link_collisions
+                            )
+                            configs_checked += 1
 
-                            # Collect link collision statistics
-                            if show_link_collisions and link_info:
-                                colliding_links = [info['link_name'] for info in link_info if info['collision']]
-                                for link_name in colliding_links:
-                                    link_collision_counter[link_name] += 1
+                            if is_collision:
+                                # Calculate alpha value for this interpolation point
+                                alpha = (interp_idx + 1) / (num_interp_steps + 1)
+                                collision_segments.append((i, alpha))
 
-                                # Show detailed info for first few collisions
-                                if shown_count < max_show:
-                                    print(f"\n  Segment {i}→{i+1} (α={alpha:.2f}): COLLISION")
-                                    print(f"    Colliding links: {', '.join(colliding_links)}")
-                                    shown_count += 1
+                                # Collect link collision statistics
+                                if show_link_collisions and link_info:
+                                    colliding_links = [info['link_name'] for info in link_info if info['collision']]
+                                    for link_name in colliding_links:
+                                        link_collision_counter[link_name] += 1
 
-            # Progress reporting
-            if verbose and interpolate:
-                if configs_checked % 500 == 0:
-                    total_to_check = num_waypoints + (num_waypoints - 1) * num_interp_steps
-                    print(f"  Progress: {configs_checked}/{total_to_check} configurations checked")
-            elif verbose and not interpolate:
-                if (i + 1) % 100 == 0:
-                    print(f"  Progress: {i+1}/{num_waypoints} waypoints checked")
+                                    # Show detailed info for first few collisions
+                                    if shown_count < max_show:
+                                        print(f"\n  Segment {i}→{i+1} (α={alpha:.2f}): COLLISION")
+                                        print(f"    Colliding links: {', '.join(colliding_links)}")
+                                        shown_count += 1
+
+                # Progress reporting
+                if verbose and interpolate:
+                    if configs_checked % 500 == 0:
+                        total_to_check = num_waypoints + (num_waypoints - 1) * num_interp_steps
+                        print(f"  Progress: {configs_checked}/{total_to_check} configurations checked")
+                elif verbose and not interpolate:
+                    if (i + 1) % 100 == 0:
+                        print(f"  Progress: {i+1}/{num_waypoints} waypoints checked")
 
         # Calculate statistics
         num_collisions = len(collision_indices)
@@ -2198,6 +2344,17 @@ def main():
         help='Joint reconfiguration threshold in radians (default: 1.0)'
     )
     parser.add_argument(
+        '--parallel',
+        action='store_true',
+        help='Enable parallel collision checking using multiprocessing (faster for large trajectories)'
+    )
+    parser.add_argument(
+        '--num-workers',
+        type=int,
+        default=None,
+        help='Number of worker processes for parallel checking (default: auto-detect as cpu_count - 2)'
+    )
+    parser.add_argument(
         '--attempt_replan',
         action='store_true',
         help='Attempt CuRobo motion planning for colliding/reconfiguring segments'
@@ -2295,7 +2452,9 @@ def main():
         interpolate=not args.no_interpolate,
         num_interp_steps=args.interp_steps,
         check_reconfig=args.check_reconfig,
-        reconfig_threshold=args.reconfig_threshold
+        reconfig_threshold=args.reconfig_threshold,
+        parallel=args.parallel,
+        num_workers=args.num_workers
     )
 
     print_collision_summary(results, args, "COLLISION CHECK RESULTS")

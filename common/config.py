@@ -139,7 +139,7 @@ MAX_MOVE_WEIGHT = 5.0
 
 # Collision checking
 COLLISION_MARGIN = 0.0  # Safety margin in meters (0 = no margin)
-COLLISION_INTERP_STEPS = 5  # Interpolation steps for collision checking
+COLLISION_INTERP_STEPS = 10  # Interpolation steps for collision checking
 
 
 # ============================================================================
