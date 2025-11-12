@@ -26,12 +26,45 @@ import coal
 import numpy as np
 import os
 import sys
+import time
 from typing import List, Tuple, Optional, Dict
 import trimesh
 from scipy.spatial.transform import Rotation
 import pinocchio as pin
 from pathlib import Path
+from datetime import datetime
 import yaml
+
+try:
+    import torch
+    from curobo.geom.sdf.world import CollisionCheckerType
+    from curobo.geom.types import WorldConfig, Mesh
+    from curobo.types.base import TensorDeviceType
+    from curobo.types.state import JointState
+    from curobo.util_file import (
+        get_robot_configs_path,
+        get_world_configs_path,
+        join_path,
+        load_yaml,
+    )
+    from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGenPlanConfig
+    from curobo.util.trajectory import get_interpolated_trajectory, get_batch_interpolated_trajectory, InterpolateType
+    CUROBO_AVAILABLE = True
+except ImportError:
+    torch = None
+    WorldConfig = None
+    Mesh = None
+    TensorDeviceType = None
+    JointState = None
+    MotionGen = None
+    MotionGenConfig = None
+    MotionGenPlanConfig = None
+    CollisionCheckerType = None
+    get_robot_configs_path = None
+    get_world_configs_path = None
+    join_path = None
+    load_yaml = None
+    CUROBO_AVAILABLE = False
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -128,6 +161,8 @@ class COALCollisionChecker:
         self.collision_margin = collision_margin
         self.collision_spheres = {}
         self.link_meshes = {}
+        self.curobo_tensor_args = TensorDeviceType() if TensorDeviceType and CUROBO_AVAILABLE else None
+        self.curobo_interp_kind = InterpolateType.CUBIC if CUROBO_AVAILABLE else None
 
         # Load obstacle meshes
         print(f"Loading obstacle meshes...")
@@ -508,6 +543,159 @@ class COALCollisionChecker:
 
         return robot_collision_objects
 
+    def _generate_segment_interpolation(
+        self,
+        start_config: np.ndarray,
+        end_config: np.ndarray,
+        num_steps: int
+    ) -> List[np.ndarray]:
+        """Interpolate between two configs using CuRobo trajectory util when available."""
+        if num_steps <= 0:
+            return [np.array(end_config, dtype=np.float64)]
+
+        if CUROBO_AVAILABLE and self.curobo_tensor_args and JointState and get_interpolated_trajectory:
+            try:
+                return self._curobo_interpolate_segment(start_config, end_config, num_steps)
+            except Exception as exc:  # pylint: disable=broad-except
+                print(f"Warning: CuRobo interpolation failed ({exc}), falling back to linear path.")
+
+        return generate_interpolated_path(start_config, end_config, num_steps)
+
+    def _curobo_interpolate_segment(
+        self,
+        start_config: np.ndarray,
+        end_config: np.ndarray,
+        num_steps: int
+    ) -> List[np.ndarray]:
+        """Use curobo.util.trajectory.get_interpolated_trajectory for segment interpolation."""
+        if torch is None or self.curobo_tensor_args is None:
+            raise RuntimeError("CuRobo interpolation is unavailable (torch not initialized).")
+
+        horizon = num_steps + 1
+        dtype = getattr(self.curobo_tensor_args, "dtype", torch.float32)
+        device = getattr(self.curobo_tensor_args, "device", torch.device("cpu"))
+
+        start_tensor = torch.as_tensor(start_config, dtype=dtype, device=device)
+        end_tensor = torch.as_tensor(end_config, dtype=dtype, device=device)
+        traj_tensor = torch.stack([start_tensor, end_tensor]).unsqueeze(0)
+
+        dof = start_tensor.shape[-1]
+        out_state = JointState.zeros([1, horizon, dof], self.curobo_tensor_args)
+
+        interp_dt = max(1.0 / max(num_steps, 1), 1e-3)
+        interpolated_state, last_tsteps, _ = get_interpolated_trajectory(
+            [traj_tensor],
+            out_state,
+            des_horizon=horizon,
+            interpolation_dt=interp_dt,
+            kind=self.curobo_interp_kind or InterpolateType.LINEAR,
+            tensor_args=self.curobo_tensor_args,
+        )
+
+        steps = last_tsteps[0] if last_tsteps else horizon
+        steps = min(steps, horizon)
+        data = interpolated_state.position[0, :steps, :].detach().cpu().numpy()
+
+        if data.shape[0] <= 1:
+            return [np.array(end_config, dtype=np.float64)]
+
+        return [np.array(row, dtype=np.float64) for row in data[1:]]
+
+    def _batch_interpolate_trajectory(
+        self,
+        trajectory: np.ndarray,
+        num_interp_steps: int
+    ) -> List[Tuple[int, int, np.ndarray]]:
+        """
+        Batch interpolate entire trajectory using CuRobo's get_batch_interpolated_trajectory.
+
+        This is much faster than per-segment interpolation as it:
+        - Makes a single GPU/tensor call instead of N-1 calls
+        - Better utilizes GPU parallelism
+        - Reduces memory allocation overhead
+
+        Args:
+            trajectory: (N, dof) array of joint configurations
+            num_interp_steps: Number of interpolation steps between waypoints
+
+        Returns:
+            List of (segment_idx, interp_idx, config) tuples for all interpolated configurations.
+            segment_idx: which segment (0 to N-2)
+            interp_idx: which interpolation point within segment (0 to num_interp_steps-1)
+            config: the interpolated joint configuration
+        """
+        if not CUROBO_AVAILABLE or torch is None or self.curobo_tensor_args is None:
+            raise RuntimeError("CuRobo batch interpolation unavailable (torch not initialized).")
+
+        if get_batch_interpolated_trajectory is None:
+            raise RuntimeError("get_batch_interpolated_trajectory not available in CuRobo version.")
+
+        num_waypoints = len(trajectory)
+        if num_waypoints < 2:
+            return []
+
+        dtype = getattr(self.curobo_tensor_args, "dtype", torch.float32)
+        device = getattr(self.curobo_tensor_args, "device", torch.device("cpu"))
+
+        # Convert trajectory to torch tensor
+        traj_tensor = torch.as_tensor(trajectory, dtype=dtype, device=device)
+
+        # Create JointState from trajectory
+        raw_traj = JointState.from_position(traj_tensor.unsqueeze(0))  # Shape: (1, N, dof)
+
+        # For batch interpolation:
+        # - raw_dt: time between waypoints (uniform, scalar for batch)
+        # - interpolation_dt: desired time resolution for interpolation
+        # - Result: ~(raw_dt / interpolation_dt) steps between each waypoint
+
+        # Set raw_dt to 1.0 (1 second between waypoints) for simplicity
+        raw_dt = torch.ones(1, dtype=dtype, device=device)
+
+        # Calculate interpolation_dt to get approximately num_interp_steps between waypoints
+        # interpolation_dt = raw_dt / num_interp_steps
+        interpolation_dt = 1.0 / max(num_interp_steps, 1)
+
+        # Call batch interpolation
+        # Using LINEAR_CUDA for speed (can be changed to CUBIC if smoothness is critical)
+        interp_kind = InterpolateType.LINEAR_CUDA if hasattr(InterpolateType, 'LINEAR_CUDA') else InterpolateType.LINEAR
+
+        interpolated_traj, traj_steps, opt_dt = get_batch_interpolated_trajectory(
+            raw_traj=raw_traj,
+            raw_dt=raw_dt,
+            interpolation_dt=interpolation_dt,
+            kind=interp_kind,
+            tensor_args=self.curobo_tensor_args,
+            optimize_dt=False,  # Keep fixed dt for predictable results
+        )
+
+        # Extract interpolated positions
+        # Shape: (1, total_interpolated_points, dof)
+        interp_positions = interpolated_traj.position[0].detach().cpu().numpy()
+        actual_steps = traj_steps[0].item()  # Number of actual interpolated steps
+
+        # Parse interpolated trajectory back into per-segment structure
+        # get_batch_interpolated_trajectory returns all waypoints + interpolated points
+        # We need to identify which points belong to which segment
+
+        result = []
+        point_idx = 0
+
+        # Skip first waypoint (already in original trajectory)
+        point_idx = 1
+
+        for segment_idx in range(num_waypoints - 1):
+            # For each segment, extract num_interp_steps interpolated points
+            for interp_idx in range(num_interp_steps):
+                if point_idx < len(interp_positions):
+                    config = np.array(interp_positions[point_idx], dtype=np.float64)
+                    result.append((segment_idx, interp_idx, config))
+                    point_idx += 1
+
+            # Skip the next waypoint
+            point_idx += 1
+
+        return result
+
     def check_collision_single_config(
         self,
         joint_positions: np.ndarray,
@@ -608,10 +796,12 @@ class COALCollisionChecker:
         show_link_collisions: bool = False,
         max_show: int = 10,
         interpolate: bool = True,
-        num_interp_steps: int = 10
+        num_interp_steps: int = 10,
+        check_reconfig: bool = True,
+        reconfig_threshold: float = 1.0
     ) -> dict:
         """
-        Check collisions along entire trajectory
+        Check collisions and reconfigurations along entire trajectory
 
         Args:
             trajectory: (N, 6) array of joint configurations
@@ -620,9 +810,11 @@ class COALCollisionChecker:
             max_show: Maximum number of collision details to show
             interpolate: If True, check intermediate configurations between waypoints
             num_interp_steps: Number of interpolation steps between waypoints
+            check_reconfig: If True, also check for joint reconfigurations
+            reconfig_threshold: Threshold for joint reconfigurations in radians
 
         Returns:
-            Dictionary with collision statistics
+            Dictionary with collision and reconfiguration statistics
         """
         from collections import Counter
 
@@ -631,13 +823,34 @@ class COALCollisionChecker:
         collision_free_indices = []
         collision_segments = []  # List of (waypoint_idx, alpha) tuples for interpolated collisions
         link_collision_counter = Counter()
+        collision_timer_start = time.perf_counter()
 
+        # Pre-compute all interpolations using batch processing if enabled
+        interpolated_configs_map = None
         if interpolate:
             # Calculate total configurations to check
             total_configs = num_waypoints + (num_waypoints - 1) * num_interp_steps
             print(f"\nChecking {num_waypoints} waypoints with interpolation "
                   f"({num_interp_steps} steps between waypoints)...")
             print(f"Total configurations to check: {total_configs:,}")
+
+            # Try batch interpolation for significant speedup
+            try:
+                batch_start = time.perf_counter()
+                batch_results = self._batch_interpolate_trajectory(trajectory, num_interp_steps)
+                batch_time = time.perf_counter() - batch_start
+
+                # Organize results by segment index for fast lookup
+                interpolated_configs_map = {}
+                for seg_idx, interp_idx, config in batch_results:
+                    if seg_idx not in interpolated_configs_map:
+                        interpolated_configs_map[seg_idx] = []
+                    interpolated_configs_map[seg_idx].append((interp_idx, config))
+
+                print(f"  Batch interpolation completed in {batch_time:.3f}s (optimized)")
+            except Exception as exc:
+                print(f"  Batch interpolation failed ({exc}), using segment-by-segment fallback")
+                interpolated_configs_map = None
         else:
             print(f"\nChecking {num_waypoints} waypoints for collisions (no interpolation)...")
 
@@ -672,39 +885,69 @@ class COALCollisionChecker:
 
             # Check interpolated segments if enabled
             if interpolate and i < num_waypoints - 1:
-                start_config = trajectory[i]
-                end_config = trajectory[i + 1]
+                # Use pre-computed batch results if available, otherwise fallback to per-segment
+                if interpolated_configs_map is not None:
+                    # Fast path: use pre-computed interpolations
+                    interpolated_list = interpolated_configs_map.get(i, [])
+                    for interp_idx, interp_config in interpolated_list:
+                        is_collision, dist, link_info = self.check_collision_single_config(
+                            interp_config,
+                            return_distance=True,
+                            return_link_info=show_link_collisions
+                        )
+                        configs_checked += 1
 
-                # Generate interpolated path
-                interpolated_configs = generate_interpolated_path(
-                    start_config, end_config, num_interp_steps
-                )
+                        if is_collision:
+                            # Calculate alpha value for this interpolation point
+                            alpha = (interp_idx + 1) / (num_interp_steps + 1)
+                            collision_segments.append((i, alpha))
 
-                # Check each interpolated configuration
-                for interp_idx, interp_config in enumerate(interpolated_configs):
-                    is_collision, dist, link_info = self.check_collision_single_config(
-                        interp_config,
-                        return_distance=True,
-                        return_link_info=show_link_collisions
+                            # Collect link collision statistics
+                            if show_link_collisions and link_info:
+                                colliding_links = [info['link_name'] for info in link_info if info['collision']]
+                                for link_name in colliding_links:
+                                    link_collision_counter[link_name] += 1
+
+                                # Show detailed info for first few collisions
+                                if shown_count < max_show:
+                                    print(f"\n  Segment {i}→{i+1} (α={alpha:.2f}): COLLISION")
+                                    print(f"    Colliding links: {', '.join(colliding_links)}")
+                                    shown_count += 1
+                else:
+                    # Fallback path: compute interpolations per-segment
+                    start_config = trajectory[i]
+                    end_config = trajectory[i + 1]
+
+                    # Generate interpolated path
+                    interpolated_configs = self._generate_segment_interpolation(
+                        start_config, end_config, num_interp_steps
                     )
-                    configs_checked += 1
 
-                    if is_collision:
-                        # Calculate alpha value for this interpolation point
-                        alpha = (interp_idx + 1) / (num_interp_steps + 1)
-                        collision_segments.append((i, alpha))
+                    # Check each interpolated configuration
+                    for interp_idx, interp_config in enumerate(interpolated_configs):
+                        is_collision, dist, link_info = self.check_collision_single_config(
+                            interp_config,
+                            return_distance=True,
+                            return_link_info=show_link_collisions
+                        )
+                        configs_checked += 1
 
-                        # Collect link collision statistics
-                        if show_link_collisions and link_info:
-                            colliding_links = [info['link_name'] for info in link_info if info['collision']]
-                            for link_name in colliding_links:
-                                link_collision_counter[link_name] += 1
+                        if is_collision:
+                            # Calculate alpha value for this interpolation point
+                            alpha = (interp_idx + 1) / (num_interp_steps + 1)
+                            collision_segments.append((i, alpha))
 
-                            # Show detailed info for first few collisions
-                            if shown_count < max_show:
-                                print(f"\n  Segment {i}→{i+1} (α={alpha:.2f}): COLLISION")
-                                print(f"    Colliding links: {', '.join(colliding_links)}")
-                                shown_count += 1
+                            # Collect link collision statistics
+                            if show_link_collisions and link_info:
+                                colliding_links = [info['link_name'] for info in link_info if info['collision']]
+                                for link_name in colliding_links:
+                                    link_collision_counter[link_name] += 1
+
+                                # Show detailed info for first few collisions
+                                if shown_count < max_show:
+                                    print(f"\n  Segment {i}→{i+1} (α={alpha:.2f}): COLLISION")
+                                    print(f"    Colliding links: {', '.join(colliding_links)}")
+                                    shown_count += 1
 
             # Progress reporting
             if verbose and interpolate:
@@ -742,8 +985,242 @@ class COALCollisionChecker:
             'collision_free_indices': collision_free_indices,
             'link_collisions': dict(link_collision_counter) if show_link_collisions else {}
         }
+        results['collision_check_time_sec'] = time.perf_counter() - collision_timer_start
+        results['reconfig_check_time_sec'] = 0.0
+
+        # Check for joint reconfigurations if requested
+        if check_reconfig:
+            if verbose:
+                print(f"\nChecking for joint reconfigurations...")
+            reconfig_timer_start = time.perf_counter()
+            reconfig_results = self.detect_joint_reconfigurations(
+                trajectory,
+                threshold=reconfig_threshold,
+                exclude_last_joint=True
+            )
+            results['reconfig_check_time_sec'] = time.perf_counter() - reconfig_timer_start
+            results.update({
+                'reconfiguration_segments': reconfig_results['reconfiguration_segments'],
+                'num_reconfigurations': reconfig_results['num_reconfigurations'],
+                'reconfiguration_rate': reconfig_results['reconfiguration_rate'],
+                'reconfigurations_per_joint': reconfig_results['reconfigurations_per_joint'],
+                'max_changes_per_joint': reconfig_results['max_changes_per_joint'],
+                'mean_changes_per_joint': reconfig_results['mean_changes_per_joint'],
+                'max_changes_per_segment': reconfig_results['max_changes_per_segment'],
+                'reconfig_threshold': reconfig_results['threshold_used'],
+                'excluded_last_joint': reconfig_results['excluded_last_joint']
+            })
+            if verbose:
+                print(f"  Found {reconfig_results['num_reconfigurations']} reconfigurations")
+                print(f"  Reconfiguration rate: {reconfig_results['reconfiguration_rate']:.1%}")
+        else:
+            # Add empty reconfiguration data
+            results.update({
+                'reconfiguration_segments': [],
+                'num_reconfigurations': 0,
+                'reconfiguration_rate': 0.0,
+                'reconfigurations_per_joint': [],
+                'max_changes_per_joint': [],
+                'mean_changes_per_joint': [],
+                'max_changes_per_segment': [],
+                'reconfig_threshold': 0.0,
+                'excluded_last_joint': False
+            })
 
         return results
+
+    def check_trajectory_segments(
+        self,
+        trajectory: np.ndarray,
+        segment_indices: List[int],
+        verbose: bool = False,
+        show_link_collisions: bool = False,
+        max_show: int = 10,
+        interpolate: bool = True,
+        num_interp_steps: int = 10
+    ) -> dict:
+        """
+        Check collisions only for specific segments of the trajectory
+
+        Args:
+            trajectory: (N, 6) array of joint configurations
+            segment_indices: List of segment indices to check (segment i is between waypoint i and i+1)
+            verbose: Print progress
+            show_link_collisions: Show which links are colliding
+            max_show: Maximum number of collision details to show
+            interpolate: If True, check intermediate configurations between waypoints
+            num_interp_steps: Number of interpolation steps between waypoints
+
+        Returns:
+            Dictionary with collision statistics for the checked segments
+        """
+        from collections import Counter
+
+        num_waypoints = len(trajectory)
+        collision_indices = []
+        collision_free_indices = []
+        collision_segments = []
+        link_collision_counter = Counter()
+
+        # Create a set of waypoints to check (endpoints of segments)
+        waypoints_to_check = set()
+        for seg_idx in segment_indices:
+            if 0 <= seg_idx < num_waypoints - 1:
+                waypoints_to_check.add(seg_idx)
+                waypoints_to_check.add(seg_idx + 1)
+
+        if verbose:
+            print(f"\nChecking {len(segment_indices)} segments (waypoint pairs: {len(waypoints_to_check)})...")
+            if interpolate:
+                total_configs = len(waypoints_to_check) + len(segment_indices) * num_interp_steps
+                print(f"Total configurations to check: {total_configs:,}")
+
+        shown_count = 0
+        configs_checked = 0
+
+        # Check waypoints that are endpoints of segments to check
+        for waypoint_idx in sorted(waypoints_to_check):
+            joint_config = trajectory[waypoint_idx]
+            is_collision, dist, link_info = self.check_collision_single_config(
+                joint_config,
+                return_distance=True,
+                return_link_info=show_link_collisions
+            )
+            configs_checked += 1
+
+            if is_collision:
+                collision_indices.append(waypoint_idx)
+
+                if show_link_collisions and link_info:
+                    colliding_links = [info['link_name'] for info in link_info if info['collision']]
+                    for link_name in colliding_links:
+                        link_collision_counter[link_name] += 1
+
+                    if shown_count < max_show:
+                        print(f"\n  Waypoint {waypoint_idx}: COLLISION")
+                        print(f"    Colliding links: {', '.join(colliding_links)}")
+                        shown_count += 1
+            else:
+                collision_free_indices.append(waypoint_idx)
+
+        # Check interpolated segments
+        if interpolate:
+            for seg_idx in segment_indices:
+                if seg_idx < 0 or seg_idx >= num_waypoints - 1:
+                    continue
+
+                start_config = trajectory[seg_idx]
+                end_config = trajectory[seg_idx + 1]
+
+                interpolated_configs = self._generate_segment_interpolation(
+                    start_config, end_config, num_interp_steps
+                )
+
+                for interp_idx, interp_config in enumerate(interpolated_configs):
+                    is_collision, dist, link_info = self.check_collision_single_config(
+                        interp_config,
+                        return_distance=True,
+                        return_link_info=show_link_collisions
+                    )
+                    configs_checked += 1
+
+                    if is_collision:
+                        alpha = (interp_idx + 1) / (num_interp_steps + 1)
+                        collision_segments.append((seg_idx, alpha))
+
+                        if show_link_collisions and link_info:
+                            colliding_links = [info['link_name'] for info in link_info if info['collision']]
+                            for link_name in colliding_links:
+                                link_collision_counter[link_name] += 1
+
+                            if shown_count < max_show:
+                                print(f"\n  Segment {seg_idx}→{seg_idx+1} (α={alpha:.2f}): COLLISION")
+                                print(f"    Colliding links: {', '.join(colliding_links)}")
+                                shown_count += 1
+
+        # Calculate statistics
+        num_collisions = len(collision_indices)
+        num_segment_collisions = len(collision_segments)
+        total_collisions = num_collisions + num_segment_collisions
+
+        results = {
+            'configs_checked': configs_checked,
+            'num_collisions': num_collisions,
+            'num_segment_collisions': num_segment_collisions if interpolate else 0,
+            'total_collisions': total_collisions,
+            'num_collision_free': len(collision_free_indices),
+            'collision_indices': collision_indices,
+            'collision_segments': collision_segments if interpolate else [],
+            'collision_free_indices': collision_free_indices,
+            'link_collisions': dict(link_collision_counter) if show_link_collisions else {}
+        }
+
+        return results
+
+    def detect_joint_reconfigurations(
+        self,
+        trajectory: np.ndarray,
+        threshold: float = 1.0,
+        exclude_last_joint: bool = True
+    ) -> dict:
+        """
+        Detect joint reconfigurations (sudden large joint movements) in trajectory
+
+        Args:
+            trajectory: (N, n_joints) array of joint configurations
+            threshold: Minimum joint change (radians) to count as reconfiguration
+            exclude_last_joint: If True, exclude the last joint from reconfiguration analysis
+
+        Returns:
+            Dictionary with reconfiguration statistics
+        """
+        n_timesteps, n_joints = trajectory.shape
+
+        # Calculate joint differences between consecutive waypoints
+        joint_diffs = np.diff(trajectory, axis=0)  # Shape: (n_timesteps-1, n_joints)
+        joint_changes = np.abs(joint_diffs)
+
+        # Create mask to exclude last joint if requested
+        if exclude_last_joint:
+            joint_mask = np.ones(n_joints, dtype=bool)
+            joint_mask[-1] = False  # Exclude last joint
+            joint_changes_for_reconfig = joint_changes[:, joint_mask]
+        else:
+            joint_mask = np.ones(n_joints, dtype=bool)
+            joint_changes_for_reconfig = joint_changes
+
+        # Count reconfigurations per joint (for statistics)
+        reconfigurations_per_joint = np.sum(joint_changes > threshold, axis=0)
+
+        # Count total reconfigurations (any joint exceeding threshold, excluding last if requested)
+        total_reconfigurations = np.sum(np.any(joint_changes_for_reconfig > threshold, axis=1))
+
+        # Calculate movement statistics
+        max_changes_per_joint = np.max(joint_changes, axis=0)
+        mean_changes_per_joint = np.mean(joint_changes, axis=0)
+
+        # Find segments with large reconfigurations
+        reconfiguration_segments = []
+        max_changes_per_segment = []
+
+        for i in range(joint_changes.shape[0]):
+            if np.any(joint_changes_for_reconfig[i] > threshold):
+                max_change = np.max(joint_changes_for_reconfig[i])
+                # Segment i is between waypoint i and waypoint i+1
+                reconfiguration_segments.append(i)
+                max_changes_per_segment.append(max_change)
+
+        return {
+            'reconfiguration_segments': reconfiguration_segments,
+            'num_reconfigurations': int(total_reconfigurations),
+            'reconfiguration_rate': float(total_reconfigurations) / (n_timesteps - 1) if n_timesteps > 1 else 0.0,
+            'reconfigurations_per_joint': reconfigurations_per_joint.tolist(),
+            'max_changes_per_joint': max_changes_per_joint.tolist(),
+            'mean_changes_per_joint': mean_changes_per_joint.tolist(),
+            'max_changes_per_segment': max_changes_per_segment,
+            'threshold_used': threshold,
+            'excluded_last_joint': exclude_last_joint
+        }
 
 
 def load_trajectory_csv(csv_path: str) -> Tuple[np.ndarray, List[str]]:
@@ -772,6 +1249,843 @@ def load_trajectory_csv(csv_path: str) -> Tuple[np.ndarray, List[str]]:
     print(f"Joint names: {joint_names}")
 
     return trajectory, joint_names
+
+
+def save_trajectory_csv(
+    trajectory: np.ndarray,
+    joint_names: List[str],
+    output_path: Path,
+    time_step: float = 1.0
+) -> Path:
+    """
+    Save joint trajectory to CSV using provided joint names.
+
+    Uses an explicit 'time' column patterned after plan_trajectory.py where time is an
+    incrementing multiple of `time_step` (default: 1.0 second per row).
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not joint_names:
+        joint_names = [f"joint_{idx}" for idx in range(trajectory.shape[1])]
+
+    fieldnames = ['time'] + joint_names
+
+    with open(output_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for idx, config in enumerate(trajectory):
+            row = {'time': float(idx) * time_step}
+            row.update({name: float(config[i]) for i, name in enumerate(joint_names)})
+            writer.writerow(row)
+
+    return output_path
+
+
+def save_collision_report(
+    args,
+    results,
+    replan_summary: Optional[dict] = None,
+    timing_info: Optional[Dict[str, float]] = None
+) -> Path:
+    """
+    Persist collision summary to data/collision/{num_points}/collision.txt
+    (appends to the file so multiple runs are logged sequentially).
+    """
+    base_dir = Path(__file__).resolve().parent.parent
+    num_points = results.get('total_waypoints') or Path(args.trajectory).stem or "unknown"
+    report_dir = base_dir / 'data' / 'collision' / str(num_points)
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    report_path = report_dir / 'collision.txt'
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    unique_segments = sorted({wp_idx for wp_idx, _ in results.get('collision_segments', [])})
+    mesh_info = ", ".join(args.mesh) if args.mesh else "None"
+    collision_free_configs = (
+        results['total_configs_checked'] - results['total_collisions']
+        if results['interpolate'] else results['num_collision_free']
+    )
+
+    def format_list(values, max_items=50):
+        if not values:
+            return "None"
+        subset = list(values)[:max_items]
+        suffix = "" if len(values) <= max_items else f" ... (+{len(values) - max_items} more)"
+        return ", ".join(str(v) for v in subset) + suffix
+
+    def format_time(seconds: Optional[float]) -> str:
+        if seconds is None:
+            return "N/A"
+        return f"{seconds:.3f} s"
+
+    segment_pairs = [f"{idx}->{idx + 1}" for idx in unique_segments]
+
+    lines = [
+        f"=== Collision Report @ {timestamp} ===",
+        f"Trajectory: {args.trajectory}",
+        f"Robot URDF: {args.robot_urdf}",
+        f"Robot config: {args.robot_config}",
+        f"Obstacle meshes: {mesh_info}",
+        f"Collision margin: {args.collision_margin}",
+        f"Interpolation enabled: {results['interpolate']}",
+        f"Interpolation steps: {results['num_interp_steps'] if results['interpolate'] else 0}",
+        "",
+        f"Total waypoints: {results['total_waypoints']}",
+        f"Total configurations checked: {results['total_configs_checked']}",
+        f"Collisions at waypoints: {results['num_collisions']}",
+        f"Segment collisions (raw count): {results['num_segment_collisions'] if results['interpolate'] else 0}",
+        f"Total collisions: {results['total_collisions']}",
+        f"Collision-free configurations: {collision_free_configs}",
+        f"Collision rate (%): {results['collision_rate']:.2f}",
+        "",
+        f"Collision waypoint indices: {format_list(results['collision_indices'])}",
+        f"Collision segments (unique pairs): {format_list(segment_pairs)}",
+    ]
+
+    # Add reconfiguration statistics if available
+    if results.get('reconfig_threshold', 0) > 0:
+        lines.append("")
+        lines.append("Joint Reconfiguration Analysis:")
+        lines.append(f"  Threshold: {results.get('reconfig_threshold', 0):.2f} rad")
+        lines.append(f"  Excluded last joint: {results.get('excluded_last_joint', False)}")
+        lines.append(f"  Total reconfigurations: {results.get('num_reconfigurations', 0)}")
+        lines.append(f"  Reconfiguration rate: {results.get('reconfiguration_rate', 0):.1%}")
+        reconfig_segs = results.get('reconfiguration_segments', [])
+        lines.append(f"  Reconfiguration segments: {format_list(reconfig_segs)}")
+
+    link_collisions = results.get('link_collisions', {})
+    if link_collisions:
+        lines.append("")
+        lines.append("Collisions by link:")
+        for link_name, count in sorted(link_collisions.items(), key=lambda item: item[1], reverse=True):
+            lines.append(f"  - {link_name}: {count}")
+    else:
+        lines.append("")
+        lines.append("Collisions by link: None")
+
+    if replan_summary:
+        lines.append("")
+        lines.append("Replanning Summary:")
+        attempted = replan_summary.get('attempted', False)
+        lines.append(f"  Attempted: {attempted}")
+        lines.append(f"  Success: {replan_summary.get('success', False)}")
+        segments_requested = replan_summary.get('segments_requested') or []
+        collision_segs_requested = replan_summary.get('collision_segments_requested') or []
+        reconfig_segs_requested = replan_summary.get('reconfiguration_segments_requested') or []
+        segments_replanned = replan_summary.get('segments_replanned') or []
+        segments_failed = replan_summary.get('segments_failed') or []
+        lines.append(f"  Total segments requested: {format_list(segments_requested)}")
+        lines.append(f"    - Collision segments: {format_list(collision_segs_requested)}")
+        lines.append(f"    - Reconfiguration segments: {format_list(reconfig_segs_requested)}")
+        lines.append(f"  Segments replanned: {format_list(segments_replanned)}")
+        if segments_failed:
+            failure_str = ", ".join(
+                f"{item.get('segment')} ({item.get('status', 'failed')})" for item in segments_failed[:50]
+            )
+        else:
+            failure_str = "None"
+        lines.append(f"  Failed segments: {failure_str}")
+        if replan_summary.get('output_path'):
+            lines.append(f"  Collision-free CSV: {replan_summary['output_path']}")
+        if replan_summary.get('message'):
+            lines.append(f"  Notes: {replan_summary['message']}")
+
+    lines.append("")
+    lines.append("Occurrence Counts:")
+    lines.append(f"  Collisions: {results.get('total_collisions', 0)}")
+    lines.append(f"  Reconfigurations: {results.get('num_reconfigurations', 0)}")
+
+    if timing_info:
+        lines.append("")
+        lines.append("Timing (wall-clock):")
+        lines.append(f"  Collision check:         {format_time(timing_info.get('collision_check_sec'))}")
+        lines.append(f"  Reconfiguration check:  {format_time(timing_info.get('reconfig_check_sec'))}")
+        lines.append(f"  CuRobo replanning:      {format_time(timing_info.get('replan_sec'))}")
+        lines.append(f"  Total runtime:          {format_time(timing_info.get('total_runtime_sec'))}")
+
+    content = "\n".join(lines)
+    if report_path.exists() and report_path.stat().st_size > 0:
+        with open(report_path, 'a') as f:
+            f.write("\n\n" + content)
+    else:
+        with open(report_path, 'w') as f:
+            f.write(content)
+
+    return report_path
+
+
+def determine_segments_to_replan(num_segments: int, results: dict) -> dict:
+    """
+    Map waypoint/segment collision and reconfiguration info to concrete segment indices.
+
+    Args:
+        num_segments: Total number of segments in trajectory
+        results: Dictionary containing collision and reconfiguration results
+
+    Returns:
+        Dictionary with keys:
+            - 'all': All segments to replan (collision + reconfiguration)
+            - 'collision': Segments with collisions only
+            - 'reconfiguration': Segments with reconfigurations only
+    """
+    collision_segments = set()
+    reconfig_segments = set()
+
+    # Add collision segments from waypoint collisions
+    for idx in results.get('collision_indices', []):
+        if idx > 0:
+            collision_segments.add(idx - 1)
+        if idx < num_segments:
+            collision_segments.add(idx)
+
+    # Add collision segments from interpolated segment collisions
+    for seg_idx, _ in results.get('collision_segments', []):
+        if 0 <= seg_idx < num_segments:
+            collision_segments.add(seg_idx)
+
+    # Add reconfiguration segments
+    for seg_idx in results.get('reconfiguration_segments', []):
+        if 0 <= seg_idx < num_segments:
+            reconfig_segments.add(seg_idx)
+
+    # Combine all segments (union)
+    all_segments = collision_segments | reconfig_segments
+
+    return {
+        'all': sorted(all_segments),
+        'collision': sorted(collision_segments),
+        'reconfiguration': sorted(reconfig_segments)
+    }
+
+
+if CUROBO_AVAILABLE:
+
+    def build_motion_world_config(
+        glass_position: np.ndarray,
+        table_position: np.ndarray,
+        table_dimensions: np.ndarray,
+        wall_position: np.ndarray,
+        wall_dimensions: np.ndarray,
+        workbench_position: np.ndarray,
+        workbench_dimensions: np.ndarray,
+        robot_mount_position: np.ndarray,
+        robot_mount_dimensions: np.ndarray,
+        mesh_paths: List[str],
+    ) -> WorldConfig:
+        """Create a CuRobo WorldConfig mirroring the COAL environment."""
+        base_world = WorldConfig.from_dict(
+            load_yaml(join_path(get_world_configs_path(), "collision_table.yml"))
+        )
+        base_world.cuboid[0].pose[:3] = table_position.tolist()
+        base_world.cuboid[0].dims[:3] = table_dimensions.tolist()
+        base_world.cuboid[0].name = "table"
+
+        def cuboid_from_pose(name: str, position: np.ndarray, dims: np.ndarray) -> WorldConfig:
+            cuboid_dict = {
+                name: {
+                    "dims": dims.tolist(),
+                    "pose": list(position) + [1, 0, 0, 0],
+                }
+            }
+            cfg = WorldConfig.from_dict({"cuboid": cuboid_dict})
+            cfg.cuboid[0].name = name
+            return cfg
+
+        wall_cfg = cuboid_from_pose("wall", wall_position, wall_dimensions)
+        workbench_cfg = cuboid_from_pose("workbench", workbench_position, workbench_dimensions)
+        robot_mount_cfg = cuboid_from_pose("robot_mount", robot_mount_position, robot_mount_dimensions)
+
+        mesh_list = []
+        base_pose = list(glass_position) + [1, 0, 0, 0]
+        for mesh_path in mesh_paths:
+            mesh_path = str(Path(mesh_path).resolve())
+            mesh_list.append(
+                Mesh(
+                    name=Path(mesh_path).stem,
+                    file_path=mesh_path,
+                    pose=base_pose,
+                )
+            )
+
+        all_cuboids = (
+            base_world.cuboid +
+            wall_cfg.cuboid +
+            workbench_cfg.cuboid +
+            robot_mount_cfg.cuboid
+        )
+
+        return WorldConfig(
+            cuboid=all_cuboids,
+            mesh=mesh_list
+        )
+
+
+    class CuRoboMotionPlanner:
+        """Wrapper around CuRobo MotionGen for segment replanning."""
+
+        def __init__(
+            self,
+            robot_config_path: str,
+            world_config: WorldConfig,
+            trajopt_tsteps: int = 32,
+            interpolation_dt: float = 0.01,
+            interpolation_steps: int = 5000,
+            collision_checker_type=CollisionCheckerType.MESH,
+        ):
+            self.ready = False
+            self.motion_gen = None
+            self.init_error = None
+            self.tensor_args = TensorDeviceType() if TensorDeviceType else None
+
+            try:
+                robot_cfg = self._load_robot_config(robot_config_path)
+                self.dof = len(robot_cfg["robot_cfg"]["kinematics"]["cspace"]["joint_names"])
+
+                motion_gen_cfg = MotionGenConfig.load_from_robot_config(
+                    robot_cfg,
+                    world_config,
+                    self.tensor_args,
+                    trajopt_tsteps=trajopt_tsteps,
+                    interpolation_dt=interpolation_dt,
+                    interpolation_steps=interpolation_steps,
+                    num_graph_seeds=4,
+                    num_trajopt_seeds=4,
+                    num_trajopt_noisy_seeds=2,
+                    num_ik_seeds=16,
+                    collision_checker_type=collision_checker_type,
+                    evaluate_interpolated_trajectory=True,
+                    use_cuda_graph=True,
+                )
+                self.motion_gen = MotionGen(motion_gen_cfg)
+                self.motion_gen.warmup(n_goalset=1)
+                self.ready = True
+            except Exception as exc:  # pylint: disable=broad-except
+                self.init_error = str(exc)
+                self.motion_gen = None
+
+        def _load_robot_config(self, robot_config_path: str) -> dict:
+            abs_path = Path(robot_config_path)
+            if not abs_path.is_absolute():
+                abs_path = Path(__file__).resolve().parent.parent / abs_path
+            with open(abs_path, 'r') as f:
+                data = yaml.safe_load(f)
+            if "robot_cfg" not in data:
+                data = {"robot_cfg": data}
+            return data
+
+        def _to_joint_state(self, config: np.ndarray) -> JointState:
+            tensor = torch.as_tensor(
+                config,
+                dtype=self.tensor_args.dtype,
+                device=self.tensor_args.device
+            ).view(1, -1)
+            return JointState.from_position(tensor)
+
+        def _joint_state_to_numpy(self, joint_state: JointState) -> Optional[np.ndarray]:
+            if joint_state is None:
+                return None
+            positions = joint_state.position
+            if isinstance(positions, torch.Tensor):
+                arr = positions.detach().cpu().numpy()
+            else:
+                arr = np.asarray(positions)
+            if arr.ndim == 3:
+                arr = arr[0]
+            return np.array(arr, dtype=np.float64)
+
+        def plan_segment(
+            self,
+            start_config: np.ndarray,
+            goal_config: np.ndarray,
+            timeout: float,
+            max_attempts: int,
+        ) -> Dict:
+            if not self.ready or self.motion_gen is None:
+                return {
+                    'success': False,
+                    'status': self.init_error or 'planner_not_initialized'
+                }
+
+            plan_cfg = MotionGenPlanConfig(
+                enable_graph=True,
+                timeout=timeout,
+                max_attempts=max_attempts,
+                enable_graph_attempt=5,
+                need_graph_success=False,
+                use_start_state_as_retract=True,
+            )
+
+            try:
+                start_state = self._to_joint_state(start_config)
+                goal_state = self._to_joint_state(goal_config)
+                result = self.motion_gen.plan_single_js(start_state, goal_state, plan_cfg)
+            except Exception as exc:  # pylint: disable=broad-except
+                return {'success': False, 'status': str(exc)}
+
+            success_tensor = getattr(result, "success", None)
+            success = bool(success_tensor.detach().cpu().numpy()[0]) if success_tensor is not None else False
+
+            path = None
+            if success:
+                joint_state = result.get_interpolated_plan() or result.optimized_plan
+                path = self._joint_state_to_numpy(joint_state)
+                success = path is not None
+
+            return {
+                'success': success,
+                'path': path,
+                'status': str(getattr(result, "status", "success")),
+                'solve_time': getattr(result, "total_time", None),
+            }
+
+        def plan_segments_batch(
+            self,
+            start_configs: List[np.ndarray],
+            goal_configs: List[np.ndarray],
+            timeout: float,
+            max_attempts: int,
+        ) -> List[Dict]:
+            """
+            Plan multiple segments sequentially (optimized for CuRobo warmup)
+
+            Note: True batch planning with plan_batch() requires specific CuRobo setup.
+            This method uses sequential planning but benefits from GPU warmup and
+            CUDA graph optimization after the first call.
+
+            Args:
+                start_configs: List of start configurations
+                goal_configs: List of goal configurations
+                timeout: Timeout for each planning query
+                max_attempts: Maximum attempts for each query
+
+            Returns:
+                List of dictionaries with planning results for each segment
+            """
+            if not self.ready or self.motion_gen is None:
+                return [{
+                    'success': False,
+                    'status': self.init_error or 'planner_not_initialized',
+                    'path': None
+                } for _ in range(len(start_configs))]
+
+            if len(start_configs) != len(goal_configs):
+                raise ValueError("start_configs and goal_configs must have same length")
+
+            batch_size = len(start_configs)
+            if batch_size == 0:
+                return []
+
+            # Sequential planning with optimized execution
+            # CuRobo's CUDA graphs make subsequent calls much faster
+            results = []
+            for start_config, goal_config in zip(start_configs, goal_configs):
+                result = self.plan_segment(start_config, goal_config, timeout, max_attempts)
+                results.append(result)
+
+            return results
+
+
+def merge_collision_results(
+    original_results: dict,
+    segment_results: dict,
+    replanned_segments: List[int],
+    new_num_waypoints: int
+) -> dict:
+    """
+    Merge original collision results with results from rechecked segments.
+
+    Args:
+        original_results: Original collision check results for entire trajectory
+        segment_results: Collision check results for replanned segments only
+        replanned_segments: List of segment indices that were replanned
+        new_num_waypoints: Total number of waypoints in new trajectory
+
+    Returns:
+        Merged collision results dictionary
+    """
+    from collections import Counter
+
+    # Start with collision-free assumption for all waypoints
+    all_collision_indices = set(original_results['collision_indices'])
+    all_collision_free_indices = set(original_results['collision_free_indices'])
+    all_collision_segments = list(original_results['collision_segments'])
+
+    # Remove old collision data for replanned segments
+    replanned_set = set(replanned_segments)
+
+    # Remove waypoint collisions at replanned segment endpoints
+    waypoints_to_remove = set()
+    for seg_idx in replanned_set:
+        waypoints_to_remove.add(seg_idx)
+        waypoints_to_remove.add(seg_idx + 1)
+
+    all_collision_indices -= waypoints_to_remove
+    all_collision_free_indices -= waypoints_to_remove
+
+    # Remove segment collisions for replanned segments
+    all_collision_segments = [
+        (seg_idx, alpha) for seg_idx, alpha in all_collision_segments
+        if seg_idx not in replanned_set
+    ]
+
+    # Add new results from segment recheck
+    for idx in segment_results['collision_indices']:
+        all_collision_indices.add(idx)
+        all_collision_free_indices.discard(idx)
+
+    for idx in segment_results['collision_free_indices']:
+        all_collision_free_indices.add(idx)
+        all_collision_indices.discard(idx)
+
+    all_collision_segments.extend(segment_results['collision_segments'])
+
+    # Merge link collisions
+    link_collisions = Counter(original_results.get('link_collisions', {}))
+    link_collisions.update(segment_results.get('link_collisions', {}))
+
+    # Calculate final statistics
+    num_collisions = len(all_collision_indices)
+    num_segment_collisions = len(all_collision_segments)
+    total_collisions = num_collisions + num_segment_collisions
+
+    # Calculate total configs checked
+    original_configs = original_results['total_configs_checked']
+    segment_configs = segment_results['configs_checked']
+
+    # Estimate configs that would have been checked for replanned segments in original
+    if original_results['interpolate']:
+        configs_per_segment = 2 + original_results['num_interp_steps']  # 2 endpoints + interp steps
+        old_segment_configs = len(replanned_segments) * configs_per_segment
+    else:
+        old_segment_configs = len(waypoints_to_remove)
+
+    total_configs_checked = original_configs - old_segment_configs + segment_configs
+
+    # Calculate collision rate
+    if original_results['interpolate']:
+        total_possible = new_num_waypoints + (new_num_waypoints - 1) * original_results['num_interp_steps']
+        collision_rate = total_collisions / total_possible * 100 if total_possible > 0 else 0
+    else:
+        collision_rate = num_collisions / new_num_waypoints * 100 if new_num_waypoints > 0 else 0
+
+    # Merge reconfiguration results if available
+    merged_results = {
+        'total_waypoints': new_num_waypoints,
+        'total_configs_checked': total_configs_checked,
+        'interpolate': original_results['interpolate'],
+        'num_interp_steps': original_results['num_interp_steps'],
+        'num_collisions': num_collisions,
+        'num_segment_collisions': num_segment_collisions,
+        'total_collisions': total_collisions,
+        'num_collision_free': len(all_collision_free_indices),
+        'collision_rate': collision_rate,
+        'collision_indices': sorted(all_collision_indices),
+        'collision_segments': sorted(all_collision_segments),
+        'collision_free_indices': sorted(all_collision_free_indices),
+        'link_collisions': dict(link_collisions)
+    }
+
+    # Add reconfiguration data from segment_results if available
+    if 'reconfiguration_segments' in segment_results:
+        # Get original reconfiguration segments (excluding replanned ones)
+        all_reconfig_segments = set(original_results.get('reconfiguration_segments', []))
+        all_reconfig_segments -= replanned_set  # Remove replanned segments
+
+        # Add new reconfiguration segments from recheck
+        all_reconfig_segments.update(segment_results.get('reconfiguration_segments', []))
+
+        merged_results.update({
+            'reconfiguration_segments': sorted(all_reconfig_segments),
+            'num_reconfigurations': len(all_reconfig_segments),
+            'reconfiguration_rate': len(all_reconfig_segments) / (new_num_waypoints - 1) if new_num_waypoints > 1 else 0.0,
+            'reconfigurations_per_joint': segment_results.get('reconfigurations_per_joint', []),
+            'max_changes_per_joint': segment_results.get('max_changes_per_joint', []),
+            'mean_changes_per_joint': segment_results.get('mean_changes_per_joint', []),
+            'max_changes_per_segment': segment_results.get('max_changes_per_segment', []),
+            'reconfig_threshold': segment_results.get('reconfig_threshold', 0.0),
+            'excluded_last_joint': segment_results.get('excluded_last_joint', False)
+        })
+    else:
+        # Preserve original reconfiguration data if not rechecking
+        merged_results.update({
+            'reconfiguration_segments': original_results.get('reconfiguration_segments', []),
+            'num_reconfigurations': original_results.get('num_reconfigurations', 0),
+            'reconfiguration_rate': original_results.get('reconfiguration_rate', 0.0),
+            'reconfigurations_per_joint': original_results.get('reconfigurations_per_joint', []),
+            'max_changes_per_joint': original_results.get('max_changes_per_joint', []),
+            'mean_changes_per_joint': original_results.get('mean_changes_per_joint', []),
+            'max_changes_per_segment': original_results.get('max_changes_per_segment', []),
+            'reconfig_threshold': original_results.get('reconfig_threshold', 0.0),
+            'excluded_last_joint': original_results.get('excluded_last_joint', False)
+        })
+
+    return merged_results
+
+
+def attempt_motion_replan(
+    trajectory: np.ndarray,
+    checker: COALCollisionChecker,
+    args: argparse.Namespace,
+    initial_results: dict,
+) -> dict:
+    """Attempt to repair colliding segments using CuRobo MotionGen."""
+    summary = {
+        'attempted': False,
+        'success': False,
+        'message': None,
+        'segments_requested': [],
+        'segments_replanned': [],
+        'segments_failed': [],
+        'trajectory': None,
+        'collision_results': None,
+    }
+
+    if not CUROBO_AVAILABLE:
+        summary['message'] = "CuRobo dependencies are not available."
+        return summary
+
+    if len(trajectory) < 2:
+        summary['message'] = "Trajectory must contain at least two waypoints for replanning."
+        return summary
+
+    num_segments = len(trajectory) - 1
+    segment_info = determine_segments_to_replan(num_segments, initial_results)
+    segments_to_replan = segment_info['all']  # collision + reconfiguration union
+
+    if not segments_to_replan:
+        summary['message'] = "No specific segments identified for replanning."
+        return summary
+
+    # Print segment breakdown
+    print(f"  Segments requiring replanning:")
+    print(f"    - Collision segments: {len(segment_info['collision'])}")
+    print(f"    - Reconfiguration segments: {len(segment_info['reconfiguration'])}")
+    print(f"    - Total (union): {len(segments_to_replan)}")
+
+    world_cfg = build_motion_world_config(
+        checker.glass_position,
+        checker.table_position,
+        checker.table_dimensions,
+        checker.wall_position,
+        checker.wall_dimensions,
+        checker.workbench_position,
+        checker.workbench_dimensions,
+        checker.robot_mount_position,
+        checker.robot_mount_dimensions,
+        args.mesh,
+    )
+
+    planner = CuRoboMotionPlanner(
+        args.robot_config,
+        world_cfg,
+        trajopt_tsteps=args.replan_trajopt_tsteps,
+        interpolation_dt=args.replan_interp_dt,
+        interpolation_steps=args.replan_interp_steps,
+    )
+
+    summary['attempted'] = True
+    summary['segments_requested'] = segments_to_replan
+    summary['collision_segments_requested'] = segment_info['collision']
+    summary['reconfiguration_segments_requested'] = segment_info['reconfiguration']
+
+    if not planner.ready:
+        summary['message'] = planner.init_error or "Failed to initialize MotionGen planner."
+        return summary
+
+    # Batch planning: collect all segments to replan
+    print(f"  Planning {len(segments_to_replan)} segments in batch...")
+
+    batch_start_configs = []
+    batch_goal_configs = []
+    batch_segment_indices = []
+
+    for seg_idx in segments_to_replan:
+        start_config = np.array(trajectory[seg_idx], dtype=np.float64)
+        goal_config = np.array(trajectory[seg_idx + 1], dtype=np.float64)
+        batch_start_configs.append(start_config)
+        batch_goal_configs.append(goal_config)
+        batch_segment_indices.append(seg_idx)
+
+    # Plan all segments in batch
+    batch_start_time = time.time()
+    batch_results = planner.plan_segments_batch(
+        batch_start_configs,
+        batch_goal_configs,
+        timeout=args.replan_timeout,
+        max_attempts=args.replan_max_attempts,
+    )
+    batch_end_time = time.time()
+
+    print(f"  Batch planning completed in {batch_end_time - batch_start_time:.2f}s")
+
+    # Create mapping from segment index to planning result
+    segment_to_plan = {}
+    for seg_idx, plan_res in zip(batch_segment_indices, batch_results):
+        segment_to_plan[seg_idx] = plan_res
+
+    # Build new trajectory by stitching segments together
+    new_points: List[np.ndarray] = [np.array(trajectory[0], dtype=np.float64)]
+    successful_segments = []
+    failed_segments = []
+    segment_ranges = {}  # Maps original seg_idx -> (new_start_idx, new_end_idx) in new trajectory
+
+    for seg_idx in range(num_segments):
+        start_idx = len(new_points) - 1  # Current position in new trajectory
+        goal = np.array(trajectory[seg_idx + 1], dtype=np.float64)
+
+        if seg_idx in segment_to_plan:
+            # This segment was replanned
+            plan_res = segment_to_plan[seg_idx]
+
+            if plan_res['success'] and plan_res['path'] is not None:
+                replanned_path = plan_res['path']
+                # Adjust start point to match current trajectory endpoint
+                # Use replanned path from second point onwards
+                for waypoint in replanned_path[1:]:
+                    new_points.append(np.array(waypoint, dtype=np.float64))
+                successful_segments.append(seg_idx)
+                end_idx = len(new_points) - 1
+                segment_ranges[seg_idx] = (start_idx, end_idx)
+                print(f"    Segment {seg_idx}: SUCCESS ({len(replanned_path)} waypoints)")
+                continue
+            else:
+                failed_segments.append({
+                    'segment': seg_idx,
+                    'status': plan_res.get('status', 'plan_failed')
+                })
+                print(f"    Segment {seg_idx}: FAILED ({plan_res.get('status', 'unknown')})")
+
+        # Use original trajectory for this segment
+        new_points.append(goal)
+        end_idx = len(new_points) - 1
+        segment_ranges[seg_idx] = (start_idx, end_idx)
+
+    new_traj = np.vstack(new_points)
+
+    print(f"  Replanning summary: {len(successful_segments)}/{len(segments_to_replan)} segments successful")
+
+    # Only recheck replanned segments instead of entire trajectory
+    print(f"  Rechecking {len(successful_segments)} replanned segments (optimized)...")
+
+    # Build list of new trajectory segment indices to recheck
+    new_segments_to_check = []
+    for orig_seg_idx in successful_segments:
+        start_idx, end_idx = segment_ranges[orig_seg_idx]
+        # Add all segment indices in this range
+        for i in range(start_idx, end_idx):
+            new_segments_to_check.append(i)
+
+    if new_segments_to_check:
+        # Recheck only the replanned segments for collisions
+        segment_recheck_results = checker.check_trajectory_segments(
+            new_traj,
+            segment_indices=new_segments_to_check,
+            verbose=False,
+            show_link_collisions=args.show_link_collisions,
+            interpolate=not args.no_interpolate,
+            num_interp_steps=args.interp_steps
+        )
+
+        # Also recheck joint reconfigurations for the full new trajectory
+        if initial_results.get('reconfig_threshold', 0) > 0:
+            reconfig_recheck_results = checker.detect_joint_reconfigurations(
+                new_traj,
+                threshold=initial_results.get('reconfig_threshold', 1.0),
+                exclude_last_joint=True
+            )
+            segment_recheck_results.update(reconfig_recheck_results)
+
+        # Merge with original results
+        recheck_results = merge_collision_results(
+            original_results=initial_results,
+            segment_results=segment_recheck_results,
+            replanned_segments=segments_to_replan,
+            new_num_waypoints=len(new_traj)
+        )
+
+        print(f"  Checked {segment_recheck_results['configs_checked']} configurations "
+              f"(vs {initial_results['total_configs_checked']} for full trajectory)")
+    else:
+        # No successful replanning, use original results
+        recheck_results = initial_results.copy()
+        recheck_results['total_waypoints'] = len(new_traj)
+
+    summary.update({
+        'trajectory': new_traj,
+        'collision_results': recheck_results,
+        'segments_replanned': successful_segments,
+        'segments_failed': failed_segments,
+    })
+
+    # Check if both collisions and reconfigurations are resolved
+    collisions_resolved = recheck_results['total_collisions'] == 0
+    reconfigs_resolved = recheck_results.get('num_reconfigurations', 0) == 0
+
+    if collisions_resolved and reconfigs_resolved:
+        summary['success'] = True
+        summary['message'] = "All collisions and reconfigurations resolved via replanning."
+    elif collisions_resolved:
+        summary['success'] = False
+        summary['message'] = f"Collisions resolved, but {recheck_results.get('num_reconfigurations', 0)} reconfigurations remain."
+    elif reconfigs_resolved:
+        summary['success'] = False
+        summary['message'] = f"Reconfigurations resolved, but {recheck_results['total_collisions']} collisions remain."
+    else:
+        summary['success'] = False
+        summary['message'] = f"Replanning completed but {recheck_results['total_collisions']} collisions and {recheck_results.get('num_reconfigurations', 0)} reconfigurations remain."
+
+    return summary
+
+
+def print_collision_summary(results: dict, args: argparse.Namespace, title: str):
+    """Pretty-print collision statistics."""
+    print("\n" + "=" * 70)
+    print(title)
+    print("=" * 70)
+    print(f"Total waypoints:        {results['total_waypoints']}")
+
+    if results['interpolate']:
+        print(f"Total configurations:   {results['total_configs_checked']:,} "
+              f"(with {results['num_interp_steps']} interpolation steps)")
+        print(f"Collisions at waypoints:    {results['num_collisions']}")
+        print(f"Collisions in segments:     {results['num_segment_collisions']}")
+        print(f"Total collisions:           {results['total_collisions']}")
+        print(f"Collision-free configs:     "
+              f"{results['total_configs_checked'] - results['total_collisions']:,}")
+    else:
+        print(f"Collision-free:         {results['num_collision_free']}")
+        print(f"Collisions detected:    {results['num_collisions']}")
+
+    print(f"Collision rate:         {results['collision_rate']:.2f}%")
+
+    # Print reconfiguration statistics if available
+    if results.get('reconfig_threshold', 0) > 0:
+        print(f"\nJoint Reconfigurations:")
+        print(f"  Threshold:            {results.get('reconfig_threshold', 0):.2f} rad")
+        print(f"  Excluded last joint:  {results.get('excluded_last_joint', False)}")
+        print(f"  Total reconfigurations: {results.get('num_reconfigurations', 0)}")
+        print(f"  Reconfiguration rate:   {results.get('reconfiguration_rate', 0):.1%}")
+        if results.get('num_reconfigurations', 0) > 0:
+            reconfig_segs = results.get('reconfiguration_segments', [])
+            print(f"  Reconfiguration segments (first 50): {reconfig_segs[:50]}")
+
+    if results['num_collisions'] > 0:
+        print(f"\nCollision waypoint indices (first 50):")
+        print(f"  {results['collision_indices'][:50]}")
+
+    if results['interpolate'] and results['collision_segments']:
+        unique_segments = sorted({wp_idx for wp_idx, _ in results['collision_segments']})
+        print(f"\nCollision segments (first 50 waypoint pairs):")
+        for wp_idx in unique_segments[:50]:
+            print(f"  Waypoint {wp_idx}→{wp_idx+1}")
+
+    if args.show_link_collisions and results.get('link_collisions'):
+        print(f"\nCollisions by link:")
+        sorted_links = sorted(results['link_collisions'].items(), key=lambda x: x[1], reverse=True)
+        total_link_collisions = results['total_collisions'] if results['interpolate'] else results['num_collisions']
+        for link_name, count in sorted_links:
+            percentage = (count / total_link_collisions) * 100 if total_link_collisions > 0 else 0
+            print(f"  {link_name}: {count} ({percentage:.1f}% of collisions)")
 
 
 def main():
@@ -865,8 +2179,68 @@ def main():
         default=config.COLLISION_INTERP_STEPS,
         help=f'Number of interpolation steps between waypoints (default: {config.COLLISION_INTERP_STEPS})'
     )
+    parser.add_argument(
+        '--check-reconfig',
+        action='store_true',
+        default=True,
+        help='Check for joint reconfigurations (default: True)'
+    )
+    parser.add_argument(
+        '--no-check-reconfig',
+        action='store_false',
+        dest='check_reconfig',
+        help='Disable joint reconfiguration checking'
+    )
+    parser.add_argument(
+        '--reconfig-threshold',
+        type=float,
+        default=1.0,
+        help='Joint reconfiguration threshold in radians (default: 1.0)'
+    )
+    parser.add_argument(
+        '--attempt_replan',
+        action='store_true',
+        help='Attempt CuRobo motion planning for colliding/reconfiguring segments'
+    )
+    parser.add_argument(
+        '--replan_timeout',
+        type=float,
+        default=8.0,
+        help='Timeout (seconds) for each CuRobo motion planning query'
+    )
+    parser.add_argument(
+        '--replan_max_attempts',
+        type=int,
+        default=20,
+        help='Maximum attempts for each CuRobo planning request'
+    )
+    parser.add_argument(
+        '--collision_free_output',
+        type=str,
+        default=None,
+        help='Output CSV path for collision-free trajectory (default: same folder as input)'
+    )
+    parser.add_argument(
+        '--replan_interp_dt',
+        type=float,
+        default=0.05,
+        help='Interpolation dt for CuRobo MotionGen trajectories'
+    )
+    parser.add_argument(
+        '--replan_interp_steps',
+        type=int,
+        default=5000,
+        help='Interpolation steps used when generating CuRobo trajectories'
+    )
+    parser.add_argument(
+        '--replan_trajopt_tsteps',
+        type=int,
+        default=32,
+        help='Trajectory optimization timesteps for CuRobo planner'
+    )
 
     args = parser.parse_args()
+    script_start_time = time.perf_counter()
 
     print("=" * 70)
     print("COAL Collision Checker for Robot Trajectories")
@@ -877,7 +2251,7 @@ def main():
 
     # Load trajectory
     print(f"\n1. Loading trajectory from: {args.trajectory}")
-    trajectory, _ = load_trajectory_csv(args.trajectory)
+    trajectory, joint_names = load_trajectory_csv(args.trajectory)
 
     # Initialize collision checker
     print(f"\n2. Initializing COAL collision checker")
@@ -911,78 +2285,69 @@ def main():
         print(f"   Interpolation enabled: {args.interp_steps} steps between waypoints")
     else:
         print(f"   Interpolation disabled: checking waypoints only")
+    if args.check_reconfig:
+        print(f"   Joint reconfiguration checking enabled (threshold: {args.reconfig_threshold} rad)")
 
     results = checker.check_trajectory(
         trajectory,
         verbose=args.verbose,
         show_link_collisions=args.show_link_collisions,
         interpolate=not args.no_interpolate,
-        num_interp_steps=args.interp_steps
+        num_interp_steps=args.interp_steps,
+        check_reconfig=args.check_reconfig,
+        reconfig_threshold=args.reconfig_threshold
     )
 
-    # Print results
-    print("\n" + "=" * 70)
-    print("COLLISION CHECK RESULTS")
-    print("=" * 70)
-    print(f"Total waypoints:        {results['total_waypoints']}")
+    print_collision_summary(results, args, "COLLISION CHECK RESULTS")
 
-    if results['interpolate']:
-        print(f"Total configurations:   {results['total_configs_checked']:,} "
-              f"(with {results['num_interp_steps']} interpolation steps)")
-        print(f"Collisions at waypoints:    {results['num_collisions']}")
-        print(f"Collisions in segments:     {results['num_segment_collisions']}")
-        print(f"Total collisions:           {results['total_collisions']}")
-        print(f"Collision-free configs:     {results['total_configs_checked'] - results['total_collisions']:,}")
-    else:
-        print(f"Collision-free:         {results['num_collision_free']}")
-        print(f"Collisions detected:    {results['num_collisions']}")
+    final_results = results
+    replan_summary: Dict = {'attempted': False}
+    collision_free_csv_path = None
+    timing_info: Dict[str, float] = {
+        'collision_check_sec': results.get('collision_check_time_sec', 0.0),
+        'reconfig_check_sec': results.get('reconfig_check_time_sec', 0.0),
+        'replan_sec': 0.0,
+        'total_runtime_sec': 0.0,
+    }
 
-    print(f"Collision rate:         {results['collision_rate']:.2f}%")
+    # Attempt replanning if there are collisions OR reconfigurations
+    needs_replan = results['total_collisions'] > 0 or results.get('num_reconfigurations', 0) > 0
 
-    if results['num_collisions'] > 0:
-        print(f"\nCollision waypoint indices (first 50):")
-        print(f"  {results['collision_indices'][:50]}")
+    if args.attempt_replan and needs_replan:
+        print("\n4. Attempting CuRobo replanning for problematic segments...")
+        replan_start_time = time.perf_counter()
+        replan_summary = attempt_motion_replan(trajectory, checker, args, results)
+        timing_info['replan_sec'] = time.perf_counter() - replan_start_time
+        replan_summary['replan_time_sec'] = timing_info['replan_sec']
 
-    # Print segment collisions if interpolation was used
-    if results['interpolate'] and results['num_segment_collisions'] > 0:
-        print(f"\nCollision segments (first 50):")
-        for wp_idx, alpha in results['collision_segments'][:50]:
-            print(f"  Waypoint {wp_idx}→{wp_idx+1} (α={alpha:.2f})")
+        # if replan_summary.get('success'):
+        final_results = replan_summary['collision_results']
+        trajectory = replan_summary['trajectory']
+        output_path = Path(args.collision_free_output) if args.collision_free_output else Path(args.trajectory).parent / 'collision_free_trajectory.csv'
+        collision_free_csv_path = save_trajectory_csv(trajectory, joint_names, output_path)
+        replan_summary['output_path'] = str(collision_free_csv_path)
+        print("\n✓ Collision-free trajectory generated via CuRobo.")
+        print(f"Saved to: {collision_free_csv_path}")
+        print_collision_summary(final_results, args, "REPLANNED COLLISION CHECK RESULTS")
+        # else:
+        #     print("\nCuRobo replanning unsuccessful.")
+        #     if replan_summary.get('message'):
+        #         print(f"Reason: {replan_summary['message']}")
+    elif args.attempt_replan:
+        print("\nNo collisions detected — skipping CuRobo replanning.")
+        replan_summary['replan_time_sec'] = timing_info['replan_sec']
 
-    # Print link collision statistics
-    if args.show_link_collisions and results.get('link_collisions'):
-        print(f"\nCollisions by link:")
-        sorted_links = sorted(results['link_collisions'].items(), key=lambda x: x[1], reverse=True)
-        total_link_collisions = results['total_collisions'] if results['interpolate'] else results['num_collisions']
-        for link_name, count in sorted_links:
-            percentage = (count / total_link_collisions) * 100 if total_link_collisions > 0 else 0
-            print(f"  {link_name}: {count} ({percentage:.1f}% of collisions)")
+    timing_info['total_runtime_sec'] = time.perf_counter() - script_start_time
 
-    print("\n" + "=" * 70)
-    print("\nNOTE:")
-    print("- Using COAL (Collision and Occupancy Algorithms Library)")
-    print("  COAL is 5-15x faster than FCL with improved numerical stability")
-    print("- Using Pinocchio for Forward Kinematics")
-    if results['interpolate']:
-        print(f"- Interpolation ENABLED: Checking {results['num_interp_steps']} intermediate "
-              f"configurations between each waypoint pair")
-        print("  This detects collisions that occur during motion between waypoints")
-    else:
-        print("- Interpolation DISABLED: Only checking discrete waypoints")
-        print("  WARNING: May miss collisions that occur between waypoints!")
-    print("- Robot collision geometry:")
-    if args.use_link_meshes:
-        print("  Using actual mesh geometries from URDF (most accurate)")
-    elif not args.use_capsules:
-        print("  Using collision spheres from CuRobo config")
-    else:
-        print("  Using capsule approximations")
-    print("- To improve accuracy:")
-    print("  1. Use --use_link_meshes for most accurate collision checking")
-    print("  2. Adjust --interp-steps to control interpolation density (default: 10)")
-    print("  3. Use --collision_margin to add safety margins (e.g., 0.01 for 1cm)")
-    print("=" * 70)
+    report_path = save_collision_report(
+        args,
+        final_results,
+        replan_summary if replan_summary.get('attempted') else None,
+        timing_info
+    )
+    print(f"\nCollision report saved to: {report_path}")
 
-
+    if collision_free_csv_path:
+        print(f"- Collision-free trajectory saved to {collision_free_csv_path}")
 if __name__ == "__main__":
     main()

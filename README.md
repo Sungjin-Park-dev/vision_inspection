@@ -89,13 +89,18 @@ This method allows you to inspect and modify intermediate results at each stage.
 python scripts/mesh_to_viewpoints.py \
     --mesh_file data/object/glass_zup.obj \
     --save_path data/viewpoint/3000/viewpoints.h5 \
-    --auto_num_points \
     --visualize
 ```
 
 **Output**: `data/viewpoint/3000/viewpoints.h5` containing surface positions and normals
 
 **Requirements**: Python only (no Isaac Sim)
+
+**Notes**:
+- The script now **automatically estimates** how many viewpoints are needed, so `--auto_num_points` is no longer required.
+- Use `--adaptive_sampling` (optionally tune `--curvature_weight`) if you want curvature-aware density; otherwise sampling is uniform.
+- Meshes must already be in meters. If your asset is authored in millimeters, scale it externally (e.g., in CAD or MeshLab) before running the script.
+- Statistics plots are no longer generated; rely on the console summary or Open3D visualization.
 
 ---
 
@@ -191,7 +196,7 @@ omni_python scripts/simulate_trajectory.py \
 
 ---
 
-#### Step 6: Validate Collisions (Optional)
+#### Step 6: Validate Collisions & Reconfigurations (Optional)
 
 ```bash
 omni_python scripts/coal_check.py \
@@ -199,14 +204,25 @@ omni_python scripts/coal_check.py \
     --robot_urdf ur_description/ur20.urdf \
     --mesh data/object/glass_zup.obj \
     --interp-steps 30 \
+    --check-reconfig \
+    --reconfig-threshold 1.0 \
     --verbose
 ```
 
-**Output**: Collision statistics and analysis
+**Output**:
+- Collision statistics and analysis
+- Joint reconfiguration detection
+- Collision report saved to `data/collision/{num_points}/collision.txt`
 
 **Requirements**: Python with COAL library
 
 **Time**: ~1-3 minutes
+
+**New Features**:
+- ✅ **Joint reconfiguration detection**: Identifies sudden large joint movements
+- ✅ **Automated replanning**: Fixes both collisions and reconfigurations using CuRobo
+- ✅ **Optimized batch planning**: Replan multiple segments efficiently
+- ✅ **Last joint exclusion**: Ignores end-effector rotation in reconfiguration analysis
 
 ---
 
@@ -441,7 +457,9 @@ python scripts/plan_trajectory.py --ik_solutions data/ik/3000/ik_solutions.h5 --
 cat data/trajectory/3000/joint_trajectory_*_reconfig.txt
 ```
 
-### Collision Validation with Safety Margin
+### Collision & Reconfiguration Validation
+
+#### Basic Collision Check with Safety Margin
 
 ```bash
 omni_python scripts/coal_check.py \
@@ -450,13 +468,94 @@ omni_python scripts/coal_check.py \
     --verbose
 ```
 
-### Use Actual Robot Meshes for Collision
+#### Joint Reconfiguration Detection
+
+Detect sudden large joint movements that may cause mechanical issues:
+
+```bash
+omni_python scripts/coal_check.py \
+    --trajectory data/trajectory/3000/joint_trajectory_dp.csv \
+    --check-reconfig \
+    --reconfig-threshold 1.0  # radians
+```
+
+**Parameters**:
+- `--check-reconfig`: Enable reconfiguration detection (default: True)
+- `--no-check-reconfig`: Disable reconfiguration detection
+- `--reconfig-threshold`: Threshold in radians (default: 1.0)
+
+**Output**:
+```
+Joint Reconfigurations:
+  Threshold:            1.00 rad
+  Excluded last joint:  True
+  Total reconfigurations: 15
+  Reconfiguration rate:   15.2%
+  Reconfiguration segments: [12, 23, 34, 45, ...]
+```
+
+#### Automated Replanning for Problem Segments
+
+Fix both collisions and reconfigurations using CuRobo:
+
+```bash
+omni_python scripts/coal_check.py \
+    --trajectory data/trajectory/3000/joint_trajectory_dp.csv \
+    --attempt_replan \
+    --replan_timeout 8.0 \
+    --replan_max_attempts 20
+```
+
+**How it works**:
+1. Detects collision and reconfiguration segments
+2. Batches replanning requests for efficiency
+3. Uses CuRobo MotionGen to generate collision-free paths
+4. Rechecks only modified segments (optimized)
+5. Saves collision-free trajectory if successful
+
+**Output**:
+```
+4. Attempting CuRobo replanning for problematic segments...
+  Segments requiring replanning:
+    - Collision segments: 5
+    - Reconfiguration segments: 8
+    - Total (union): 12
+  Planning 12 segments in batch...
+  Batch planning completed in 14.52s
+    Segment 3: SUCCESS (45 waypoints)
+    Segment 7: SUCCESS (52 waypoints)
+    ...
+  Replanning summary: 11/12 segments successful
+  Rechecking 11 replanned segments (optimized)...
+  Checked 523 configurations (vs 1,090 for full trajectory)
+
+✓ All collisions and reconfigurations resolved via replanning.
+Saved to: data/trajectory/3000/collision_free_trajectory.csv
+```
+
+#### Use Actual Robot Meshes for Collision
 
 ```bash
 omni_python scripts/coal_check.py \
     --trajectory data/trajectory/3000/joint_trajectory_dp.csv \
     --use_link_meshes \
     --mesh_base_path ur_description
+```
+
+#### Complete Validation & Replanning Example
+
+```bash
+omni_python scripts/coal_check.py \
+    --trajectory data/trajectory/3000/joint_trajectory_dp.csv \
+    --robot_urdf ur_description/ur20.urdf \
+    --mesh data/object/glass_zup.obj \
+    --interp-steps 30 \
+    --check-reconfig \
+    --reconfig-threshold 1.0 \
+    --attempt_replan \
+    --replan_timeout 8.0 \
+    --collision_free_output data/trajectory/3000/optimized_trajectory.csv \
+    --verbose
 ```
 
 ---

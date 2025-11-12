@@ -607,8 +607,8 @@ def main():
     parser.add_argument(
         "--robot",
         type=str,
-        default="ur20.yml",
-        help="Robot configuration file (default: ur20.yml)"
+        default=config.DEFAULT_ROBOT_CONFIG,
+        help='Path to CuRobo robot config YAML file (for collision spheres)'
     )
     args = parser.parse_args()
 

@@ -7,7 +7,7 @@ This script analyzes joint trajectory CSV files to count and visualize joint rec
 A joint reconfiguration is defined as a significant change in joint position between consecutive time steps.
 
 Usage:
-    python analyze_joint_reconfigurations.py [--input_csv path] [--threshold value] [--plot]
+    python analyze_joint_reconfigurations.py [--trajectory path] [--threshold value] [--plot]
 
 Author: Analysis Script for Vision Inspection System
 """
@@ -58,13 +58,14 @@ def load_joint_trajectory(csv_path: str) -> Tuple[np.ndarray, List[str]]:
     return joint_data, joint_names
 
 
-def analyze_joint_reconfigurations(joint_data: np.ndarray, threshold: float = 0.1) -> Dict:
+def analyze_joint_reconfigurations(joint_data: np.ndarray, threshold: float = 0.1, exclude_last_joint: bool = False) -> Dict:
     """
     Analyze joint reconfigurations in the trajectory.
 
     Args:
         joint_data: Array of shape (n_timesteps, n_joints)
         threshold: Minimum joint change (radians) to count as reconfiguration
+        exclude_last_joint: If True, exclude the last joint from reconfiguration analysis
 
     Returns:
         Dictionary containing analysis results
@@ -75,23 +76,33 @@ def analyze_joint_reconfigurations(joint_data: np.ndarray, threshold: float = 0.
     joint_diffs = np.diff(joint_data, axis=0)  # Shape: (n_timesteps-1, n_joints)
     joint_changes = np.abs(joint_diffs)
 
+    # Create mask to exclude last joint if requested
+    if exclude_last_joint:
+        joint_mask = np.ones(n_joints, dtype=bool)
+        joint_mask[-1] = False  # 마지막 joint 제외
+        joint_changes_for_reconfig = joint_changes[:, joint_mask]
+    else:
+        joint_mask = np.ones(n_joints, dtype=bool)
+        joint_changes_for_reconfig = joint_changes
+
     # Count reconfigurations for each joint
     reconfigurations_per_joint = np.sum(joint_changes > threshold, axis=0)
 
-    # Count total reconfigurations (any joint exceeding threshold)
-    total_reconfigurations = np.sum(np.any(joint_changes > threshold, axis=1))
+    # Count total reconfigurations (any joint exceeding threshold, excluding last joint if requested)
+    total_reconfigurations = np.sum(np.any(joint_changes_for_reconfig > threshold, axis=1))
 
     # Calculate movement statistics
     max_changes_per_joint = np.max(joint_changes, axis=0)
     mean_changes_per_joint = np.mean(joint_changes, axis=0)
     total_movement_per_joint = np.sum(joint_changes, axis=0)
 
-    # Find timesteps with large reconfigurations
+    # Find timesteps with large reconfigurations (excluding last joint if requested)
     large_reconfig_timesteps = []
     for i in range(joint_changes.shape[0]):
-        if np.any(joint_changes[i] > threshold):
-            max_change = np.max(joint_changes[i])
-            joints_involved = np.where(joint_changes[i] > threshold)[0]
+        if np.any(joint_changes_for_reconfig[i] > threshold):
+            max_change = np.max(joint_changes_for_reconfig[i])
+            # joint_mask를 사용하여 제외되지 않은 joint만 표시
+            joints_involved = np.where((joint_changes[i] > threshold) & joint_mask)[0]
             large_reconfig_timesteps.append({
                 'timestep': i + 1,  # +1 because diff removes first timestep
                 'max_change': max_change,
@@ -108,7 +119,8 @@ def analyze_joint_reconfigurations(joint_data: np.ndarray, threshold: float = 0.
         'mean_changes_per_joint': mean_changes_per_joint.tolist(),
         'total_movement_per_joint': total_movement_per_joint.tolist(),
         'large_reconfig_timesteps': large_reconfig_timesteps,
-        'threshold_used': threshold
+        'threshold_used': threshold,
+        'excluded_last_joint': exclude_last_joint
     }
 
 
@@ -125,6 +137,8 @@ def print_analysis_results(results: Dict, joint_names: List[str]) -> None:
     print(f"{'='*80}")
 
     print(f"Threshold used: {results['threshold_used']:.3f} radians")
+    if results.get('excluded_last_joint', False):
+        print(f"Last joint excluded from reconfiguration analysis: Yes")
     print(f"Total timesteps: {results['total_timesteps']}")
     print(f"Total reconfigurations: {results['total_reconfigurations']}")
     print(f"Reconfiguration rate: {results['reconfiguration_rate']:.1%}")
@@ -246,7 +260,7 @@ def main():
         description="Analyze joint reconfigurations in robot trajectory CSV files"
     )
     parser.add_argument(
-        "--input_csv",
+        "--trajectory",
         type=str,
         default="data/output/joint_trajectory.csv",
         help="Path to input CSV file (default: data/output/joint_trajectory.csv)"
@@ -268,18 +282,23 @@ def main():
         default=None,
         help="Directory to save analysis results (default: auto-generated from input filename)"
     )
+    parser.add_argument(
+        "--exclude-last-joint",
+        action="store_true",
+        help="Exclude the last joint from reconfiguration analysis"
+    )
 
     args = parser.parse_args()
 
     # Generate output directory from input filename if not specified
     if args.output_dir is None:
-        output_dir = os.path.dirname(args.input_csv)
+        output_dir = os.path.dirname(args.trajectory)
     else:
         output_dir = args.output_dir
 
     # Load trajectory data
     try:
-        joint_data, joint_names = load_joint_trajectory(args.input_csv)
+        joint_data, joint_names = load_joint_trajectory(args.trajectory)
     except FileNotFoundError as e:
         print(f"Error: {e}")
         return 1
@@ -288,13 +307,13 @@ def main():
         return 1
 
     # Analyze reconfigurations
-    results = analyze_joint_reconfigurations(joint_data, threshold=args.threshold)
+    results = analyze_joint_reconfigurations(joint_data, threshold=args.threshold, exclude_last_joint=args.exclude_last_joint)
 
     # Print results
     print_analysis_results(results, joint_names)
 
     # Generate output filenames from input filename
-    input_basename = os.path.splitext(os.path.basename(args.input_csv))[0]
+    input_basename = os.path.splitext(os.path.basename(args.trajectory))[0]
 
     # Generate plots if requested
     if args.plot:
@@ -308,8 +327,10 @@ def main():
     with open(results_file, 'w') as f:
         f.write("Joint Reconfiguration Analysis Results\n")
         f.write("="*50 + "\n\n")
-        f.write(f"Input file: {args.input_csv}\n")
+        f.write(f"Input file: {args.trajectory}\n")
         f.write(f"Threshold: {args.threshold:.3f} radians\n")
+        if results.get('excluded_last_joint', False):
+            f.write(f"Last joint excluded from reconfiguration analysis: Yes\n")
         f.write(f"Total timesteps: {results['total_timesteps']}\n")
         f.write(f"Total reconfigurations: {results['total_reconfigurations']}\n")
         f.write(f"Reconfiguration rate: {results['reconfiguration_rate']:.1%}\n\n")

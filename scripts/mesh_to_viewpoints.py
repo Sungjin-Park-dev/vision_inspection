@@ -25,12 +25,6 @@ import numpy as np
 from typing import Tuple, List, Optional
 from dataclasses import dataclass
 
-# Set matplotlib to use non-interactive backend
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -181,7 +175,7 @@ def load_mesh_file(file_path: str) -> Tuple[o3d.geometry.TriangleMesh, float]:
     max_range = coord_range.max()
     if max_range > 1.0:
         print(f"\n⚠️  WARNING: Mesh coordinates appear to be in MILLIMETERS (max range: {max_range:.2f})")
-        print(f"  → Consider using --mesh_unit_scale 0.001 to convert to meters")
+        print(f"  → Consider scaling the mesh to meters before running this script (e.g., ×0.001)")
     elif max_range < 0.01:
         print(f"\n⚠️  WARNING: Mesh coordinates appear unusually small (max range: {max_range:.6f})")
     else:
@@ -192,6 +186,54 @@ def load_mesh_file(file_path: str) -> Tuple[o3d.geometry.TriangleMesh, float]:
 
 
 # normalize_vectors() is now imported from common.coordinate_utils
+
+
+def compute_local_overlap(
+    curvature_norm: float,
+    curvature_weight: float,
+    base_overlap_ratio: float,
+    max_extra_overlap: float = 0.30
+) -> float:
+    """
+    Calculate local overlap ratio based on surface curvature
+
+    Args:
+        curvature_norm: Normalized curvature value [0, 1]
+            - 0.0: Flat surface
+            - 1.0: Maximum curvature (edges, corners)
+        curvature_weight: Weight for curvature influence [0, 1]
+            - 0.0: Ignore curvature (use default overlap)
+            - 1.0: Maximum curvature influence
+        base_overlap_ratio: Baseline overlap ratio (e.g., camera_spec.overlap_ratio)
+        max_extra_overlap: Maximum additional overlap that curvature can add (default 0.30)
+
+    Returns:
+        overlap: Local overlap ratio
+            - Low curvature → baseline overlap (satisfies user-specified overlap everywhere)
+            - High curvature → baseline + extra overlap scaled by curvature_weight (capped ≤ 1.0)
+
+    Examples:
+        >>> compute_local_overlap(0.0, 1.0, 0.25)  # Flat surface
+        0.25
+        >>> compute_local_overlap(1.0, 1.0, 0.25)  # Maximum curvature
+        0.55
+        >>> compute_local_overlap(0.5, 0.0, 0.25)  # Curvature ignored
+        0.25
+        >>> compute_local_overlap(1.0, 1.0, 0.50)  # High-overlap baseline
+        0.80
+    """
+    if curvature_weight < 1e-6:
+        # No curvature influence - use default overlap
+        return base_overlap_ratio
+
+    # Additional overlap grows with curvature but never exceeds remaining headroom or max_extra_overlap
+    available_headroom = max(0.0, 1.0 - base_overlap_ratio)
+    extra_overlap_cap = min(max_extra_overlap, available_headroom)
+    extra_overlap = curvature_norm * curvature_weight * extra_overlap_cap
+
+    overlap = base_overlap_ratio + extra_overlap
+
+    return overlap
 
 
 def compute_surface_curvature(mesh: o3d.geometry.TriangleMesh) -> np.ndarray:
@@ -234,16 +276,23 @@ def estimate_required_viewpoints(
     mesh: o3d.geometry.TriangleMesh,
     camera_spec: CameraSpec,
     target_coverage: float = 1.0,
-    curvature_factor: float = 1.5
+    curvature_weight: float = 0.5
 ) -> int:
     """
-    Estimate required number of viewpoints based on mesh properties
+    Estimate required number of viewpoints based on mesh properties and curvature
+
+    Uses adaptive overlap based on surface curvature:
+    - Flat regions: 10% overlap (sparse sampling)
+    - High-curvature regions: up to 40% overlap (dense sampling)
 
     Args:
         mesh: Open3D triangle mesh
         camera_spec: Camera specifications
-        target_coverage: Target coverage ratio (default: 95%)
-        curvature_factor: Multiplier for high-curvature regions (default: 1.5)
+        target_coverage: Target coverage ratio (default: 1.0)
+        curvature_weight: Weight for curvature influence (0-1, default: 0.5)
+            - 0.0: Uniform overlap (25% everywhere, ignores curvature)
+            - 0.5: Moderate adaptive overlap (10-25%)
+            - 1.0: Aggressive adaptive overlap (10-40%)
 
     Returns:
         num_viewpoints: Estimated number of viewpoints needed
@@ -251,29 +300,87 @@ def estimate_required_viewpoints(
     # Get mesh surface area
     surface_area = mesh.get_surface_area()
 
-    # Get effective coverage per viewpoint
+    # Get base FOV dimensions
+    fov_w_mm, fov_h_mm = camera_spec.fov_width_mm, camera_spec.fov_height_mm
+    fov_w_m, fov_h_m = fov_w_mm / 1000.0, fov_h_mm / 1000.0
+    fov_area = fov_w_m * fov_h_m
+    base_overlap_ratio = camera_spec.overlap_ratio
+
+    # Basic estimate using default overlap
     eff_w, eff_h = camera_spec.get_effective_coverage_mm()
-    fov_area = (eff_w / 1000.0) * (eff_h / 1000.0)  # Convert to m²
+    basic_fov_area = (eff_w / 1000.0) * (eff_h / 1000.0)
+    basic_estimate = int(np.ceil(surface_area * target_coverage / basic_fov_area))
 
-    # Basic estimate (flat surface assumption)
-    basic_estimate = int(np.ceil(surface_area * target_coverage / fov_area))
+    # If curvature_weight is zero, use basic estimate
+    if curvature_weight < 1e-6:
+        print(f"\nAutomatic viewpoint estimation:")
+        print(f"  Surface area: {surface_area * 1e6:.2f} mm²")
+        print(f"  FOV: {fov_w_mm:.1f} × {fov_h_mm:.1f} mm")
+        print(f"  Uniform overlap: {camera_spec.overlap_ratio * 100:.0f}%")
+        print(f"  Effective coverage: {eff_w:.2f} × {eff_h:.2f} mm")
+        print(f"  Estimated viewpoints: {basic_estimate}")
+        return basic_estimate
 
-    # Adjust for surface curvature
+    # Compute curvature for adaptive estimation
+    print(f"\nComputing surface curvature for adaptive estimation...")
     curvatures = compute_surface_curvature(mesh)
-    avg_curvature = np.mean(curvatures)
     max_curvature = np.max(curvatures)
 
-    # Higher curvature requires more viewpoints
-    curvature_adjustment = 1.0 + (avg_curvature / max(max_curvature, 1e-6)) * (curvature_factor - 1.0)
+    # Normalize curvatures to [0, 1]
+    curvatures_norm = curvatures / (max_curvature + 1e-8)
 
-    estimated_viewpoints = int(np.ceil(basic_estimate * curvature_adjustment))
+    # Compute weighted surface area based on local overlap
+    # Higher curvature → higher overlap → smaller effective coverage → more viewpoints
+    vertices = np.asarray(mesh.vertices)
+    triangles = np.asarray(mesh.triangles)
 
-    print(f"\nAutomatic viewpoint estimation:")
+    weighted_viewpoint_count = 0.0
+
+    for tri_idx, tri in enumerate(triangles):
+        # Get triangle vertices
+        v0, v1, v2 = vertices[tri[0]], vertices[tri[1]], vertices[tri[2]]
+
+        # Compute triangle area
+        tri_area = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0))
+
+        # Average curvature of triangle vertices
+        tri_curvature_norm = np.mean(curvatures_norm[tri])
+
+        # Compute local overlap based on curvature
+        local_overlap = compute_local_overlap(
+            tri_curvature_norm, curvature_weight, base_overlap_ratio
+        )
+
+        # Compute effective coverage for this triangle
+        local_eff_w = fov_w_m * (1.0 - local_overlap)
+        local_eff_h = fov_h_m * (1.0 - local_overlap)
+        local_fov_area = local_eff_w * local_eff_h
+
+        # Add weighted contribution
+        weighted_viewpoint_count += tri_area / local_fov_area
+
+    estimated_viewpoints = int(np.ceil(weighted_viewpoint_count * target_coverage))
+
+    # Compute statistics for reporting
+    avg_curvature = np.mean(curvatures)
+    avg_overlap = np.mean([
+        compute_local_overlap(c, curvature_weight, base_overlap_ratio)
+        for c in curvatures_norm
+    ])
+    min_overlap = compute_local_overlap(0.0, curvature_weight, base_overlap_ratio)
+    max_overlap = compute_local_overlap(1.0, curvature_weight, base_overlap_ratio)
+
+    print(f"\nAutomatic viewpoint estimation (adaptive overlap):")
     print(f"  Surface area: {surface_area * 1e6:.2f} mm²")
-    print(f"  FOV coverage per view: {fov_area * 1e6:.2f} mm²")
-    print(f"  Basic estimate (flat): {basic_estimate} viewpoints")
-    print(f"  Curvature adjustment: {curvature_adjustment:.2f}x")
-    print(f"  Final estimate: {estimated_viewpoints} viewpoints")
+    print(f"  FOV: {fov_w_mm:.1f} × {fov_h_mm:.1f} mm")
+    print(f"  Curvature weight: {curvature_weight:.2f}")
+    print(f"  Adaptive overlap range: {min_overlap*100:.0f}% (flat) → {max_overlap*100:.0f}% (curved)")
+    print(f"  Average overlap: {avg_overlap*100:.1f}%")
+    print(f"  Average curvature: {avg_curvature:.4f}")
+    print(f"  Max curvature: {max_curvature:.4f}")
+    print(f"  Basic estimate (uniform): {basic_estimate} viewpoints")
+    print(f"  Adaptive estimate: {estimated_viewpoints} viewpoints")
+    print(f"  Increase: {((estimated_viewpoints / basic_estimate - 1) * 100):.1f}%")
 
     return estimated_viewpoints
 
@@ -307,15 +414,23 @@ def sample_points_uniform(mesh: o3d.geometry.TriangleMesh, num_points: int) -> T
 def sample_points_adaptive(
     mesh: o3d.geometry.TriangleMesh,
     num_points: int,
-    curvature_weight: float = 0.5
+    curvature_weight: float = 0.5,
+    base_overlap_ratio: float = config.CAMERA_OVERLAP_RATIO
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Sample points adaptively based on surface curvature
+    Sample points adaptively based on surface curvature with local overlap weighting
+
+    Higher curvature regions get more samples due to:
+    1. Curvature-based weighting (existing behavior)
+    2. Local overlap adjustment (baseline overlap everywhere, curvature adds extra overlap)
 
     Args:
         mesh: Open3D triangle mesh
         num_points: Number of points to sample
         curvature_weight: Weight for curvature-based sampling (0-1)
+            - 0.0: Uniform sampling
+            - 1.0: Maximum curvature influence + adaptive overlap
+        base_overlap_ratio: Baseline overlap ratio used for low-curvature regions
 
     Returns:
         points: (N, 3) array of point coordinates
@@ -341,8 +456,25 @@ def sample_points_adaptive(
     triangles = np.asarray(mesh.triangles)
 
     # Sample more from high-curvature regions
-    # For each triangle, compute average weight
+    # For each triangle, compute average weight and local overlap adjustment
     tri_weights = np.mean(weights[triangles], axis=1)
+
+    # Apply local overlap weighting
+    # Higher overlap → smaller effective coverage → need more samples
+    if curvature_weight > 1e-6:
+        for i, tri in enumerate(triangles):
+            # Average normalized curvature of triangle vertices
+            tri_curvature_norm = np.mean(curvatures_norm[tri])
+
+            # Compute local overlap for this triangle
+            local_overlap = compute_local_overlap(
+                tri_curvature_norm, curvature_weight, base_overlap_ratio
+            )
+
+            # Increase weight proportional to overlap growth beyond baseline
+            overlap_factor = 1.0 + max(0.0, local_overlap - base_overlap_ratio)
+            tri_weights[i] *= overlap_factor
+
     tri_weights = tri_weights / np.sum(tri_weights)
 
     # Sample points from triangles
@@ -733,94 +865,6 @@ def visualize_viewpoints(
     )
 
 
-def plot_statistics(
-    stats: dict,
-    camera_spec: CameraSpec,
-    output_path: str = "viewpoint_stats.png"
-):
-    """
-    Plot statistics using matplotlib
-
-    Args:
-        stats: Statistics dictionary
-        camera_spec: Camera specifications
-        output_path: Output file path
-    """
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-    # Coverage statistics
-    ax = axes[0]
-
-    # Use voxel coverage if available, otherwise use simple coverage
-    coverage_ratio = stats.get('voxel_coverage_ratio', None)
-    if coverage_ratio is None:
-        coverage_ratio = stats['simple_coverage_ratio']
-        title_suffix = "(Simple estimate)"
-    else:
-        title_suffix = "(Voxel-based)"
-
-    # Handle cases where coverage > 100% (overlapping views - only in simple mode)
-    if coverage_ratio <= 1.0:
-        labels = ['Coverage', 'Uncovered']
-        sizes = [
-            coverage_ratio * 100,
-            (1 - coverage_ratio) * 100
-        ]
-        colors = ['#66b3ff', '#ff9999']
-        ax.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-        ax.set_title(f"Coverage Statistics\n{stats['num_viewpoints']} viewpoints\n{title_suffix}")
-    else:
-        # Coverage > 100%, show as bar chart instead
-        ax.barh(['Coverage'], [coverage_ratio * 100], color='#66b3ff')
-        ax.axvline(x=100, color='red', linestyle='--', linewidth=2, label='100% coverage')
-        ax.set_xlabel('Coverage (%)')
-        ax.set_xlim(0, coverage_ratio * 110)
-        ax.legend()
-        ax.set_title(f"Coverage Statistics\n{stats['num_viewpoints']} viewpoints\n{title_suffix}")
-
-    # Text summary
-    ax = axes[1]
-    ax.axis('off')
-
-    eff_w, eff_h = camera_spec.get_effective_coverage_mm()
-
-    # Build coverage text
-    if stats.get('voxel_coverage_ratio') is not None:
-        coverage_text = f"""  Voxel coverage: {stats['voxel_coverage_ratio'] * 100:.1f}% (no overlap)
-  Voxels: {stats['covered_voxels']}/{stats['total_voxels']}
-  Simple estimate: {stats['simple_coverage_ratio'] * 100:.1f}% (with overlap)"""
-    else:
-        coverage_text = f"""  Coverage: {stats['simple_coverage_ratio'] * 100:.1f}% (simple estimate)
-  Total coverage: {stats['simple_coverage_m2'] * 1e6:.2f} mm²"""
-
-    summary_text = f"""
-Camera Specifications:
-  FOV: {camera_spec.fov_width_mm} × {camera_spec.fov_height_mm} mm
-  Working Distance: {camera_spec.working_distance_mm} mm
-  Depth of Field: {camera_spec.depth_of_field_mm} mm
-  Overlap: {camera_spec.overlap_ratio * 100:.1f}%
-  Effective coverage: {eff_w:.2f} × {eff_h:.2f} mm
-
-Results:
-  Number of viewpoints: {stats['num_viewpoints']}
-  Mesh surface area: {stats['mesh_area_m2'] * 1e6:.2f} mm²
-{coverage_text}
-
-Depth Variation:
-  Average: {stats['avg_depth_variation'] * 1000:.3f} mm
-  Maximum: {stats['max_depth_variation'] * 1000:.3f} mm
-  DOF limit: {camera_spec.depth_of_field_mm:.2f} mm
-"""
-
-    ax.text(0.1, 0.5, summary_text, fontsize=11, verticalalignment='center',
-            family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    print(f"\nSaved statistics plot to: {output_path}")
-    plt.close()
-
-
 def normalize_coordinates(points: np.ndarray) -> Tuple[np.ndarray, dict]:
     """
     Normalize point coordinates to [0, 1] range
@@ -853,12 +897,9 @@ def main():
 
     # Input/Output
     parser.add_argument('--mesh_file', type=str, required=True,
-                        default=config.DEFAULT_MESH_FILE,
                         help='Path to mesh file (.obj) - Z-up coordinate system')
     parser.add_argument('--save_path', type=str, default=None,
                         help='Path to save viewpoints as HDF5 file (default: data/viewpoint/{num_points}/viewpoints.h5)')
-    parser.add_argument('--output', type=str, default='viewpoint_stats.png',
-                        help='Output path for statistics plot')
 
     # Camera specifications (defaults from common.config)
     parser.add_argument('--fov_width', type=float, default=config.CAMERA_FOV_WIDTH_MM,
@@ -873,16 +914,14 @@ def main():
                         help=f'Overlap ratio between views (default: {config.CAMERA_OVERLAP_RATIO} for {config.CAMERA_OVERLAP_RATIO*100:.0f}%%)')
 
     # Sampling parameters
-    parser.add_argument('--num_points', type=int, default=None,
-                        help='Number of surface points to sample (default: auto-calculate)')
-    parser.add_argument('--auto_num_points', action='store_true',
-                        help='Automatically calculate optimal number of viewpoints based on mesh curvature')
-    parser.add_argument('--target_coverage', type=float, default=1.0,
-                        help='Target coverage ratio for auto calculation (default: 1.0)')
     parser.add_argument('--adaptive_sampling', action='store_true',
-                        help='Use adaptive sampling based on surface curvature')
+                        help='Use adaptive sampling based on surface curvature (for point distribution)')
     parser.add_argument('--curvature_weight', type=float, default=0.5,
-                        help='Weight for curvature in adaptive sampling (0-1, default: 0.5)')
+                        help='Curvature influence on viewpoint count and sampling density (0-1, default: 0.5).\n'
+                             '  0.0: Uniform overlap (25%% everywhere), ignores curvature\n'
+                             '  0.5: Moderate adaptive overlap (10-25%%), balanced approach\n'
+                             '  1.0: Aggressive adaptive overlap (10-40%%), maximum differentiation\n'
+                             '  Higher values → more viewpoints in high-curvature regions (edges, corners)')
     parser.add_argument('--check_dof', action='store_true',
                         help='Check depth of field constraints')
     parser.add_argument('--remove_invalid_dof', action='store_true',
@@ -895,12 +934,7 @@ def main():
     # Visualization
     parser.add_argument('--visualize', action='store_true',
                         help='Visualize viewpoints with Open3D')
-    parser.add_argument('--plot', action='store_true',
-                        help='Save statistics plot')
 
-    # Unit conversion
-    parser.add_argument('--mesh_unit_scale', type=float, default=1.0,
-                        help='Scale factor to convert mesh units to meters (e.g., 0.001 for mm→m, default: 1.0)')
 
     args = parser.parse_args()
 
@@ -922,44 +956,20 @@ def main():
     # Load mesh
     mesh, surface_area = load_mesh_file(args.mesh_file)
 
-    # Apply unit scale if specified
-    if args.mesh_unit_scale != 1.0:
-        print(f"\n{'='*60}")
-        print(f"APPLYING UNIT SCALE: {args.mesh_unit_scale}")
-        print(f"{'='*60}")
-
-        vertices = np.asarray(mesh.vertices)
-        vertices_scaled = vertices * args.mesh_unit_scale
-        mesh.vertices = o3d.utility.Vector3dVector(vertices_scaled)
-
-        # Update surface area (scales by square of linear scale)
-        surface_area = surface_area * (args.mesh_unit_scale ** 2)
-
-        # Show new coordinate range
-        coord_min = vertices_scaled.min(axis=0)
-        coord_max = vertices_scaled.max(axis=0)
-        coord_range = coord_max - coord_min
-
-        print(f"Scaled mesh coordinates (meters):")
-        print(f"  X: [{coord_min[0]:.6f}, {coord_max[0]:.6f}] (range: {coord_range[0]:.6f})")
-        print(f"  Y: [{coord_min[1]:.6f}, {coord_max[1]:.6f}] (range: {coord_range[1]:.6f})")
-        print(f"  Z: [{coord_min[2]:.6f}, {coord_max[2]:.6f}] (range: {coord_range[2]:.6f})")
-        print(f"Scaled surface area: {surface_area * 1e6:.2f} mm²")
-        print(f"{'='*60}\n")
-
-    # Determine number of points
-    if args.auto_num_points or args.num_points is None:
-        num_points = estimate_required_viewpoints(
-            mesh, camera_spec,
-            target_coverage=args.target_coverage
-        )
-    else:
-        num_points = args.num_points
+    # Automatically estimate required number of viewpoints
+    num_points = estimate_required_viewpoints(
+        mesh, camera_spec,
+        target_coverage=1.0,
+        curvature_weight=args.curvature_weight
+    )
 
     # Sample surface points
     if args.adaptive_sampling:
         surface_points, surface_normals = sample_points_adaptive(
-            mesh, num_points, curvature_weight=args.curvature_weight
+            mesh,
+            num_points,
+            curvature_weight=args.curvature_weight,
+            base_overlap_ratio=camera_spec.overlap_ratio
         )
     else:
         surface_points, surface_normals = sample_points_uniform(mesh, num_points)
@@ -1091,10 +1101,6 @@ def main():
             mesh_file=args.mesh_file,
             camera_spec=camera_spec.to_dict(),
         )
-
-    # Plot statistics if requested
-    if args.plot:
-        plot_statistics(stats, camera_spec, args.output)
 
     # Visualize if requested
     if args.visualize:

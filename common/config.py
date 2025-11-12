@@ -72,35 +72,35 @@ def get_effective_coverage_mm() -> tuple:
 # ============================================================================
 
 # Glass object position in world frame (x, y, z)
-GLASS_POSITION = np.array([0.7, 0.0, 0.6], dtype=np.float64)
+GLASS_POSITION = np.array([1.3, 0.0, -0.125], dtype=np.float64)
 
 # Table cuboid position in world frame (x, y, z)
-TABLE_POSITION = np.array([0.7, 0.0, 0.0], dtype=np.float64)
+TABLE_POSITION = np.array([1.3, 0.0, -0.425], dtype=np.float64)
 
 # Table cuboid dimensions (x, y, z) in meters
-TABLE_DIMENSIONS = np.array([0.6, 1.0, 1.1], dtype=np.float64)
+TABLE_DIMENSIONS = np.array([0.6, 1.0, 0.5], dtype=np.float64)
 
 # Wall (Fence) cuboid position in world frame (x, y, z)
 # Positioned behind the robot as a safety barrier
-WALL_POSITION = np.array([-0.6, 0.0, 0.5], dtype=np.float64)
+WALL_POSITION = np.array([-1.1, 0.0, 0.5], dtype=np.float64)
 
 # Wall cuboid dimensions (x, y, z) in meters
 # Thin wall (x=thickness, y=width, z=height)
-WALL_DIMENSIONS = np.array([0.1, 2.0, 1.0], dtype=np.float64)
+WALL_DIMENSIONS = np.array([0.1, 2.2, 1.0], dtype=np.float64)
 
 # Workbench cuboid position in world frame (x, y, z)
 # Additional work surface next to main table
-WORKBENCH_POSITION = np.array([0.5, -0.7, 0.4], dtype=np.float64)
+WORKBENCH_POSITION = np.array([0.35, -1.1, 0.5], dtype=np.float64)
 
 # Workbench cuboid dimensions (x, y, z) in meters
-WORKBENCH_DIMENSIONS = np.array([0.8, 0.6, 0.8], dtype=np.float64)
+WORKBENCH_DIMENSIONS = np.array([3.0, 0.1, 1.0], dtype=np.float64)
 
 # Robot mount (base) cuboid position in world frame (x, y, z)
 # Platform underneath the robot base
-ROBOT_MOUNT_POSITION = np.array([0.0, 0.0, -0.05], dtype=np.float64)
+ROBOT_MOUNT_POSITION = np.array([0.0, 0.0, -0.25], dtype=np.float64)
 
 # Robot mount cuboid dimensions (x, y, z) in meters
-ROBOT_MOUNT_DIMENSIONS = np.array([0.3, 0.3, 0.1], dtype=np.float64)
+ROBOT_MOUNT_DIMENSIONS = np.array([0.3, 0.3, 0.5], dtype=np.float64)
 
 
 # ============================================================================
@@ -139,7 +139,7 @@ MAX_MOVE_WEIGHT = 5.0
 
 # Collision checking
 COLLISION_MARGIN = 0.0  # Safety margin in meters (0 = no margin)
-COLLISION_INTERP_STEPS = 10  # Interpolation steps for collision checking
+COLLISION_INTERP_STEPS = 5  # Interpolation steps for collision checking
 
 
 # ============================================================================

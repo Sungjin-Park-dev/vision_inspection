@@ -1,0 +1,62 @@
+Joint Reconfiguration Analysis Results
+==================================================
+
+Input file: data/trajectory/675/collision_free_trajectory.csv
+Threshold: 1.000 radians
+Total timesteps: 1020
+Total reconfigurations: 42
+Reconfiguration rate: 4.1%
+
+Per-joint statistics:
+ur20-shoulder_pan_joint: 0 reconfigurations, max change: 0.125 rad
+ur20-shoulder_lift_joint: 0 reconfigurations, max change: 0.222 rad
+ur20-elbow_joint: 0 reconfigurations, max change: 0.483 rad
+ur20-wrist_1_joint: 0 reconfigurations, max change: 0.990 rad
+ur20-wrist_2_joint: 0 reconfigurations, max change: 0.674 rad
+ur20-wrist_3_joint: 42 reconfigurations, max change: 3.124 rad
+
+All Reconfiguration Timesteps:
+Timestep   Max Change   Joints Involved               
+------------------------------------------------------------
+19         1.889        wrist_3
+214        2.214        wrist_3
+216        2.255        wrist_3
+220        2.553        wrist_3
+221        2.533        wrist_3
+222        2.416        wrist_3
+233        2.773        wrist_3
+238        2.893        wrist_3
+239        2.893        wrist_3
+273        3.124        wrist_3
+276        3.070        wrist_3
+278        2.925        wrist_3
+281        2.802        wrist_3
+283        2.831        wrist_3
+287        2.578        wrist_3
+381        2.313        wrist_3
+383        2.424        wrist_3
+389        2.138        wrist_3
+395        1.857        wrist_3
+397        1.832        wrist_3
+467        1.487        wrist_3
+476        1.122        wrist_3
+479        1.054        wrist_3
+581        2.758        wrist_3
+583        1.376        wrist_3
+586        1.133        wrist_3
+633        3.057        wrist_3
+635        3.085        wrist_3
+669        3.071        wrist_3
+687        1.082        wrist_3
+689        1.223        wrist_3
+690        1.351        wrist_3
+947        1.002        wrist_3
+949        1.135        wrist_3
+953        1.311        wrist_3
+954        1.306        wrist_3
+956        1.358        wrist_3
+957        1.473        wrist_3
+958        1.442        wrist_3
+960        1.734        wrist_3
+961        1.713        wrist_3
+965        2.048        wrist_3
