@@ -72,10 +72,10 @@ def get_effective_coverage_mm() -> tuple:
 # ============================================================================
 
 # Glass object position in world frame (x, y, z)
-GLASS_POSITION = np.array([1.3, 0.0, -0.175], dtype=np.float64)
+GLASS_POSITION = np.array([1.0, 0.0, -0.13], dtype=np.float64)
 
 # Table cuboid position in world frame (x, y, z)
-TABLE_POSITION = np.array([1.3, 0.0, -0.425], dtype=np.float64)
+TABLE_POSITION = np.array([1.0, 0.0, -0.425], dtype=np.float64)
 
 # Table cuboid dimensions (x, y, z) in meters
 TABLE_DIMENSIONS = np.array([0.6, 1.0, 0.5], dtype=np.float64)
