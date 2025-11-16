@@ -42,7 +42,7 @@ CAMERA_WORKING_DISTANCE_MM = 110.0
 CAMERA_DEPTH_OF_FIELD_MM = 0.5
 
 # Overlap ratio between adjacent viewpoints (0.25 = 25% overlap)
-CAMERA_OVERLAP_RATIO = 0.25
+CAMERA_OVERLAP_RATIO = 0.5
 
 
 def get_camera_working_distance_m() -> float:
@@ -140,6 +140,24 @@ MAX_MOVE_WEIGHT = 5.0
 # Collision checking
 COLLISION_MARGIN = 0.0  # Safety margin in meters (0 = no margin)
 COLLISION_INTERP_STEPS = 10  # Interpolation steps for collision checking
+COLLISION_USE_LINK_MESHES = False  # Use actual collision meshes from URDF
+COLLISION_SHOW_LINK_DETAILS = False  # Show detailed link collision info
+COLLISION_VERBOSE = True  # Print detailed progress
+COLLISION_PARALLEL = True  # Enable parallel collision checking
+COLLISION_NUM_WORKERS = None  # Number of workers for parallel (None = auto)
+COLLISION_USE_CUROBO_INTERP = False  # Use CuRobo GPU interpolation instead of CPU linear interpolation
+COLLISION_ADAPTIVE_INTERP = True  # Vary interpolation density per segment based on joint deltas
+COLLISION_ADAPTIVE_MAX_JOINT_STEP_DEG = 5.0  # Max joint delta (deg) allowed per interpolation gap
+COLLISION_ADAPTIVE_MIN_STEPS = 0  # Minimum interpolation steps per segment in adaptive mode
+COLLISION_ADAPTIVE_MAX_STEPS = None  # Optional cap on interpolation steps per segment (None = no cap)
+
+# Replanning parameters
+REPLAN_ENABLED = False  # Attempt replanning for collisions/reconfigurations
+REPLAN_TIMEOUT = 8.0  # Timeout in seconds for each planning query
+REPLAN_MAX_ATTEMPTS = 20  # Maximum attempts for each planning request
+REPLAN_INTERP_DT = 0.05  # Interpolation dt for trajectories
+REPLAN_INTERP_STEPS = 5000  # Interpolation steps for trajectories
+REPLAN_TRAJOPT_TSTEPS = 32  # Trajectory optimization timesteps
 
 
 # ============================================================================

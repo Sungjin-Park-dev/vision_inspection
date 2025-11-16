@@ -219,6 +219,16 @@ omni_python scripts/coal_check.py \
 - ✅ **Batch interpolation**: Fast GPU-accelerated trajectory interpolation using CuRobo
 - ✅ **Parallel collision checking**: Multi-core processing for 5-10x speedup on large trajectories
 
+**Adaptive interpolation experiments**
+- Use `scripts/adaptive_interp_experiment.py` to sweep different `COLLISION_ADAPTIVE_MAX_JOINT_STEP_DEG` values (and reconfiguration thresholds) to understand how many interpolated samples and colliding segments each setting produces:
+  ```bash
+  python scripts/adaptive_interp_experiment.py \
+      --trajectory data/trajectory/1158/joint_trajectory_dp.csv \
+      --step-deg 0.5 1 2 5 \
+      --plot-path data/experiments/adaptive_interp.png
+  ```
+- The script prints a concise table and, if `--plot-path` is provided, saves a matplotlib figure showing interpolated configuration counts, runtimes, and unique colliding segments versus the sweep values.
+
 **Performance Optimization (NEW!)**:
 
 For large trajectories (>1000 waypoints), enable parallel collision checking:

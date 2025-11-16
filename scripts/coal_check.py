@@ -66,6 +66,9 @@ except ImportError:
     get_world_configs_path = None
     join_path = None
     load_yaml = None
+    get_interpolated_trajectory = None
+    get_batch_interpolated_trajectory = None
+    InterpolateType = None
     CUROBO_AVAILABLE = False
 
 # Add parent directory to path for imports
@@ -130,10 +133,10 @@ class COALCollisionChecker:
                  robot_mount_position: np.ndarray = None,
                  robot_mount_dimensions: np.ndarray = None,
                  robot_config_path: Optional[str] = None,
-                 use_capsules: bool = False, capsule_radius: float = 0.05,
                  use_link_meshes: bool = False,
                  mesh_base_path: str = None,
-                 collision_margin: float = None):
+                 collision_margin: float = None,
+                 use_curobo_interpolation: bool = True):
         """
         Initialize collision checker
 
@@ -150,12 +153,11 @@ class COALCollisionChecker:
             robot_mount_position: Position of robot mount cuboid in world frame (x, y, z)
             robot_mount_dimensions: Dimensions of robot mount cuboid (x, y, z) in meters
             robot_config_path: Path to CuRobo robot config YAML (e.g., ur20.yml)
-            use_capsules: If True, use capsule approximations instead of spheres
-            capsule_radius: Radius for capsule collision geometry (meters)
             use_link_meshes: If True, use actual URDF collision meshes for robot links
             mesh_base_path: Base path for robot mesh files
             collision_margin: Safety margin for collision detection (meters).
                             Positive = more conservative, Negative = less conservative
+            use_curobo_interpolation: If True, use CuRobo GPU interpolation helpers
         """
         # Apply config defaults
         if glass_position is None:
@@ -196,15 +198,23 @@ class COALCollisionChecker:
         self.robot_mount_position = robot_mount_position
         self.robot_mount_dimensions = robot_mount_dimensions
         self.robot_config_path = robot_config_path
-        self.use_capsules = use_capsules
-        self.capsule_radius = capsule_radius
         self.use_link_meshes = use_link_meshes
         self.mesh_base_path = mesh_base_path
         self.collision_margin = collision_margin
         self.collision_spheres = {}
         self.link_meshes = {}
-        self.curobo_tensor_args = TensorDeviceType() if TensorDeviceType and CUROBO_AVAILABLE else None
-        self.curobo_interp_kind = InterpolateType.CUBIC if CUROBO_AVAILABLE else None
+        self.request_curobo_interpolation = bool(use_curobo_interpolation)
+        self.use_curobo_interpolation = (
+            self.request_curobo_interpolation
+            and CUROBO_AVAILABLE
+            and torch is not None
+            and TensorDeviceType is not None
+            and JointState is not None
+        )
+        self.curobo_tensor_args = TensorDeviceType() if self.use_curobo_interpolation else None
+        self.curobo_interp_kind = (
+            InterpolateType.CUBIC if self.use_curobo_interpolation and InterpolateType is not None else None
+        )
 
         # Load obstacle meshes
         print(f"Loading obstacle meshes...")
@@ -301,16 +311,12 @@ class COALCollisionChecker:
             self._load_link_meshes_from_urdf()
             print(f"  Using actual collision meshes from URDF")
             print(f"  Loaded {len(self.link_meshes)} link meshes")
-        elif robot_config_path and not use_capsules:
+        elif robot_config_path:
             # Load collision spheres from CuRobo config
             self._load_collision_spheres_from_yaml(robot_config_path)
             print(f"  Using collision spheres from: {robot_config_path}")
             total_spheres = sum(len(spheres) for spheres in self.collision_spheres.values())
             print(f"  Total collision spheres: {total_spheres}")
-        else:
-            # Use capsule approximations
-            self.link_capsules = self._define_robot_capsules()
-            print(f"  Using {len(self.link_capsules)} capsule collision geometries")
 
     def _create_transform(
         self,
@@ -434,24 +440,6 @@ class COALCollisionChecker:
 
         return coal.CollisionObject(bvh, transform)
 
-    def _define_robot_capsules(self) -> List[dict]:
-        """
-        Define capsule approximations for robot links
-
-        Returns:
-            List of dictionaries with link collision info
-        """
-        # Approximate UR20 link lengths (you may need to adjust these)
-        capsules = [
-            {'link_name': 'shoulder_link', 'length': 0.15, 'offset': np.array([0, 0, 0.075])},
-            {'link_name': 'upper_arm_link', 'length': 0.80, 'offset': np.array([0, 0, 0.40])},
-            {'link_name': 'forearm_link', 'length': 0.80, 'offset': np.array([0, 0, 0.40])},
-            {'link_name': 'wrist_1_link', 'length': 0.15, 'offset': np.array([0, 0, 0.075])},
-            {'link_name': 'wrist_2_link', 'length': 0.15, 'offset': np.array([0, 0, 0.075])},
-            {'link_name': 'wrist_3_link', 'length': 0.10, 'offset': np.array([0, 0, 0.05])},
-        ]
-        return capsules
-
     def _create_robot_collision_geometry(
         self,
         joint_positions: np.ndarray
@@ -475,9 +463,6 @@ class COALCollisionChecker:
         # Use collision spheres if available
         elif self.collision_spheres:
             return self._create_sphere_collision_objects()
-        # Otherwise use capsules
-        else:
-            return self._create_capsule_collision_objects()
 
     def _create_mesh_collision_objects(self) -> List[coal.CollisionObject]:
         """Create COAL collision objects using actual link meshes"""
@@ -550,41 +535,6 @@ class COALCollisionChecker:
 
         return robot_collision_objects
 
-    def _create_capsule_collision_objects(self) -> List[coal.CollisionObject]:
-        """Create COAL collision objects using capsule approximations"""
-        robot_collision_objects = []
-
-        for capsule_def in self.link_capsules:
-            link_name = capsule_def['link_name']
-            length = capsule_def['length']
-            offset = capsule_def['offset']
-
-            # Find the joint/frame index
-            try:
-                frame_id = self.robot_model.getFrameId(link_name)
-                transform_matrix = self.robot_data.oMf[frame_id]
-            except:
-                # If frame not found, try with joint name
-                try:
-                    joint_id = self.robot_model.getJointId(link_name)
-                    transform_matrix = self.robot_data.oMi[joint_id]
-                except:
-                    continue
-
-            # Extract position and rotation from pinocchio transform
-            position = transform_matrix.translation + transform_matrix.rotation @ offset
-            rotation = transform_matrix.rotation
-
-            # Create COAL transform
-            coal_transform = self._create_transform(rotation, position)
-
-            # Create capsule collision object
-            capsule = coal.Capsule(self.capsule_radius, length)
-            col_obj = coal.CollisionObject(capsule, coal_transform)
-            robot_collision_objects.append(col_obj)
-
-        return robot_collision_objects
-
     def _generate_segment_interpolation(
         self,
         start_config: np.ndarray,
@@ -595,7 +545,13 @@ class COALCollisionChecker:
         if num_steps <= 0:
             return [np.array(end_config, dtype=np.float64)]
 
-        if CUROBO_AVAILABLE and self.curobo_tensor_args and JointState and get_interpolated_trajectory:
+        if (
+            self.use_curobo_interpolation
+            and CUROBO_AVAILABLE
+            and self.curobo_tensor_args
+            and JointState
+            and get_interpolated_trajectory
+        ):
             try:
                 return self._curobo_interpolate_segment(start_config, end_config, num_steps)
             except Exception as exc:  # pylint: disable=broad-except
@@ -666,6 +622,9 @@ class COALCollisionChecker:
             interp_idx: which interpolation point within segment (0 to num_interp_steps-1)
             config: the interpolated joint configuration
         """
+        if not self.use_curobo_interpolation:
+            raise RuntimeError("CuRobo batch interpolation disabled via configuration.")
+
         if not CUROBO_AVAILABLE or torch is None or self.curobo_tensor_args is None:
             raise RuntimeError("CuRobo batch interpolation unavailable (torch not initialized).")
 
@@ -738,6 +697,93 @@ class COALCollisionChecker:
 
         return result
 
+    def _precompute_segment_interpolations(
+        self,
+        trajectory: np.ndarray,
+        num_interp_steps: int,
+        force_cpu: bool = False,
+        segment_step_counts: Optional[List[int]] = None
+    ) -> Dict[int, List[Tuple[int, float, np.ndarray]]]:
+        """Precompute per-segment interpolation results for reuse."""
+        interpolated_map: Dict[int, List[Tuple[int, float, np.ndarray]]] = {}
+
+        num_segments = max(0, len(trajectory) - 1)
+        if num_segments <= 0:
+            return interpolated_map
+
+        if segment_step_counts is None or len(segment_step_counts) != num_segments:
+            base_steps = max(0, int(num_interp_steps))
+            segment_step_counts = [base_steps for _ in range(num_segments)]
+
+        for seg_idx in range(num_segments):
+            steps = max(0, int(segment_step_counts[seg_idx]))
+            if steps <= 0:
+                interpolated_map[seg_idx] = []
+                continue
+
+            start_config = trajectory[seg_idx]
+            end_config = trajectory[seg_idx + 1]
+
+            if force_cpu or not self.use_curobo_interpolation:
+                segment_configs = generate_interpolated_path(start_config, end_config, steps)
+            else:
+                segment_configs = self._generate_segment_interpolation(start_config, end_config, steps)
+
+            if not segment_configs:
+                interpolated_map[seg_idx] = []
+                continue
+
+            interpolated_map[seg_idx] = []
+            denom = steps + 1
+            for interp_idx, config in enumerate(segment_configs):
+                alpha = (interp_idx + 1) / denom if denom > 0 else 0.0
+                interpolated_map[seg_idx].append((interp_idx, alpha, np.array(config, dtype=np.float64)))
+
+        return interpolated_map
+
+    def _compute_segment_interp_counts(
+        self,
+        trajectory: np.ndarray,
+        default_steps: int,
+        adaptive_interp: bool,
+        adaptive_max_joint_step_deg: float,
+        adaptive_min_steps: int,
+        adaptive_max_steps: Optional[int]
+    ) -> List[int]:
+        """Compute interpolation counts per segment."""
+        num_segments = max(0, len(trajectory) - 1)
+        if num_segments <= 0:
+            return []
+
+        base_steps = max(0, int(default_steps))
+        segment_counts = [base_steps for _ in range(num_segments)]
+
+        if not adaptive_interp:
+            return segment_counts
+
+        threshold_deg = adaptive_max_joint_step_deg if adaptive_max_joint_step_deg is not None else 0.0
+        threshold_rad = np.deg2rad(max(threshold_deg, 0.0))
+
+        for seg_idx in range(num_segments):
+            start_config = trajectory[seg_idx]
+            end_config = trajectory[seg_idx + 1]
+            max_delta = float(np.max(np.abs(end_config - start_config)))
+
+            if threshold_rad <= 0:
+                steps = base_steps
+            else:
+                steps = int(np.ceil(max_delta / threshold_rad)) if max_delta > 0 else 0
+
+            if adaptive_min_steps is not None:
+                steps = max(adaptive_min_steps, steps)
+
+            if adaptive_max_steps is not None:
+                steps = min(adaptive_max_steps, steps)
+
+            segment_counts[seg_idx] = max(0, int(steps))
+
+        return segment_counts
+
     def check_collision_single_config(
         self,
         joint_positions: np.ndarray,
@@ -788,9 +834,6 @@ class COALCollisionChecker:
                         link_name = f"{ln}_sphere_{idx - sphere_count}"
                         break
                     sphere_count += len(spheres)
-            else:
-                # Capsules
-                link_name = link_names[idx] if idx < len(link_names) else f"link_{idx}"
 
             for obstacle_obj in self.obstacle_collision_objects:
                 # Collision check
@@ -842,7 +885,11 @@ class COALCollisionChecker:
         check_reconfig: bool = True,
         reconfig_threshold: float = 1.0,
         parallel: bool = False,
-        num_workers: Optional[int] = None
+        num_workers: Optional[int] = None,
+        adaptive_interp: bool = False,
+        adaptive_max_joint_step_deg: float = 2.0,
+        adaptive_min_steps: int = 0,
+        adaptive_max_steps: Optional[int] = None,
     ) -> dict:
         """
         Check collisions and reconfigurations along entire trajectory
@@ -858,6 +905,10 @@ class COALCollisionChecker:
             reconfig_threshold: Threshold for joint reconfigurations in radians
             parallel: If True, use multiprocessing for collision checking
             num_workers: Number of worker processes (default: cpu_count() - 2)
+            adaptive_interp: Use adaptive interpolation density based on joint deltas
+            adaptive_max_joint_step_deg: Maximum joint delta (deg) allowed between samples
+            adaptive_min_steps: Minimum interpolation steps per segment when adaptive mode is on
+            adaptive_max_steps: Optional cap on interpolation steps per segment
 
         Returns:
             Dictionary with collision and reconfiguration statistics
@@ -889,31 +940,71 @@ class COALCollisionChecker:
                     print(f"  Parallel mode: Using {num_workers} workers")
 
         # Pre-compute all interpolations using batch processing if enabled
-        interpolated_configs_map = None
+        interpolated_configs_map: Optional[Dict[int, List[Tuple[int, float, np.ndarray]]]] = None
+        segment_step_counts: List[int] = []
+        total_interp_points = 0
         if interpolate:
-            # Calculate total configurations to check
-            total_configs = num_waypoints + (num_waypoints - 1) * num_interp_steps
+            segment_step_counts = self._compute_segment_interp_counts(
+                trajectory,
+                num_interp_steps,
+                adaptive_interp,
+                adaptive_max_joint_step_deg,
+                adaptive_min_steps,
+                adaptive_max_steps
+            )
+            total_interp_points = int(sum(segment_step_counts))
+
             print(f"\nChecking {num_waypoints} waypoints with interpolation "
-                  f"({num_interp_steps} steps between waypoints)...")
-            print(f"Total configurations to check: {total_configs:,}")
+                  f"(default {num_interp_steps} steps between waypoints)...")
+            print(f"Total configurations to check: {num_waypoints + total_interp_points:,}")
 
-            # Try batch interpolation for significant speedup
-            try:
-                batch_start = time.perf_counter()
-                batch_results = self._batch_interpolate_trajectory(trajectory, num_interp_steps)
-                batch_time = time.perf_counter() - batch_start
+            if adaptive_interp and segment_step_counts:
+                nonzero_steps = [c for c in segment_step_counts if c > 0]
+                if nonzero_steps:
+                    print(f"  Adaptive interpolation: max joint step {adaptive_max_joint_step_deg:.2f} deg")
+                    print(f"  Segment steps → min {min(nonzero_steps)}, max {max(nonzero_steps)}, "
+                          f"avg {total_interp_points / len(segment_step_counts):.2f}")
+                else:
+                    print("  Adaptive interpolation resolved to 0 steps for all segments")
 
-                # Organize results by segment index for fast lookup
+            if total_interp_points <= 0:
+                print("  No interpolated configurations required; only waypoints will be checked.")
                 interpolated_configs_map = {}
-                for seg_idx, interp_idx, config in batch_results:
-                    if seg_idx not in interpolated_configs_map:
-                        interpolated_configs_map[seg_idx] = []
-                    interpolated_configs_map[seg_idx].append((interp_idx, config))
+            else:
+                batch_success = False
 
-                print(f"  Batch interpolation completed in {batch_time:.3f}s (optimized)")
-            except Exception as exc:
-                print(f"  Batch interpolation failed ({exc}), using segment-by-segment fallback")
-                interpolated_configs_map = None
+                if self.use_curobo_interpolation and not adaptive_interp and num_interp_steps > 0:
+                    try:
+                        batch_start = time.perf_counter()
+                        batch_results = self._batch_interpolate_trajectory(trajectory, num_interp_steps)
+                        batch_time = time.perf_counter() - batch_start
+
+                        interpolated_configs_map = {}
+                        for seg_idx, interp_idx, config in batch_results:
+                            if seg_idx not in interpolated_configs_map:
+                                interpolated_configs_map[seg_idx] = []
+                            denom = segment_step_counts[seg_idx] + 1 if seg_idx < len(segment_step_counts) else (num_interp_steps + 1)
+                            alpha = (interp_idx + 1) / denom if denom > 0 else 0.0
+                            interpolated_configs_map[seg_idx].append((interp_idx, alpha, config))
+
+                        print(f"  Batch interpolation completed in {batch_time:.3f}s (optimized)")
+                        batch_success = True
+                    except Exception as exc:
+                        print(f"  Batch interpolation failed ({exc}), using segment-by-segment fallback")
+                        interpolated_configs_map = None
+
+                if not batch_success:
+                    cpu_start = time.perf_counter()
+                    if not self.use_curobo_interpolation:
+                        print("  CuRobo interpolation disabled; using CPU linear interpolation")
+                    interpolated_configs_map = self._precompute_segment_interpolations(
+                        trajectory,
+                        num_interp_steps,
+                        force_cpu=not self.use_curobo_interpolation,
+                        segment_step_counts=segment_step_counts
+                    )
+                    cpu_time = time.perf_counter() - cpu_start
+                    print(f"  Linear interpolation precomputed in {cpu_time:.3f}s")
         else:
             print(f"\nChecking {num_waypoints} waypoints for collisions (no interpolation)...")
 
@@ -935,9 +1026,8 @@ class COALCollisionChecker:
             if interpolate and interpolated_configs_map is not None:
                 for seg_idx in range(num_waypoints - 1):
                     interpolated_list = interpolated_configs_map.get(seg_idx, [])
-                    for interp_idx, interp_config in interpolated_list:
+                    for interp_idx, alpha, interp_config in interpolated_list:
                         all_configs.append(interp_config)
-                        alpha = (interp_idx + 1) / (num_interp_steps + 1)
                         config_metadata.append(('segment', seg_idx, seg_idx, interp_idx, alpha))
 
             # Prepare worker arguments (avoid pickling self)
@@ -954,11 +1044,10 @@ class COALCollisionChecker:
                 'robot_mount_position': self.robot_mount_position,
                 'robot_mount_dimensions': self.robot_mount_dimensions,
                 'robot_config_path': self.robot_config_path,
-                'use_capsules': self.use_capsules,
-                'capsule_radius': self.capsule_radius,
                 'use_link_meshes': self.use_link_meshes,
                 'mesh_base_path': self.mesh_base_path,
                 'collision_margin': self.collision_margin,
+                'use_curobo_interpolation': self.request_curobo_interpolation,
             }
 
             # Create work items
@@ -1035,7 +1124,7 @@ class COALCollisionChecker:
                     if interpolated_configs_map is not None:
                         # Fast path: use pre-computed interpolations
                         interpolated_list = interpolated_configs_map.get(i, [])
-                        for interp_idx, interp_config in interpolated_list:
+                        for interp_idx, alpha, interp_config in interpolated_list:
                             is_collision, dist, link_info = self.check_collision_single_config(
                                 interp_config,
                                 return_distance=True,
@@ -1045,7 +1134,6 @@ class COALCollisionChecker:
 
                             if is_collision:
                                 # Calculate alpha value for this interpolation point
-                                alpha = (interp_idx + 1) / (num_interp_steps + 1)
                                 collision_segments.append((i, alpha))
 
                                 # Collect link collision statistics
@@ -1063,11 +1151,14 @@ class COALCollisionChecker:
                         # Fallback path: compute interpolations per-segment
                         start_config = trajectory[i]
                         end_config = trajectory[i + 1]
+                        segment_steps = segment_step_counts[i] if i < len(segment_step_counts) else num_interp_steps
+                        segment_steps = max(0, int(segment_steps))
 
-                        # Generate interpolated path
-                        interpolated_configs = self._generate_segment_interpolation(
-                            start_config, end_config, num_interp_steps
-                        )
+                        interpolated_configs = []
+                        if segment_steps > 0:
+                            interpolated_configs = self._generate_segment_interpolation(
+                                start_config, end_config, segment_steps
+                            )
 
                         # Check each interpolated configuration
                         for interp_idx, interp_config in enumerate(interpolated_configs):
@@ -1080,7 +1171,8 @@ class COALCollisionChecker:
 
                             if is_collision:
                                 # Calculate alpha value for this interpolation point
-                                alpha = (interp_idx + 1) / (num_interp_steps + 1)
+                                denom = segment_steps + 1 if segment_steps > 0 else 1
+                                alpha = (interp_idx + 1) / denom
                                 collision_segments.append((i, alpha))
 
                                 # Collect link collision statistics
@@ -1098,7 +1190,7 @@ class COALCollisionChecker:
                 # Progress reporting
                 if verbose and interpolate:
                     if configs_checked % 500 == 0:
-                        total_to_check = num_waypoints + (num_waypoints - 1) * num_interp_steps
+                        total_to_check = num_waypoints + total_interp_points
                         print(f"  Progress: {configs_checked}/{total_to_check} configurations checked")
                 elif verbose and not interpolate:
                     if (i + 1) % 100 == 0:
@@ -1110,17 +1202,18 @@ class COALCollisionChecker:
         total_collisions = num_collisions + num_segment_collisions
 
         if interpolate:
-            total_configs = num_waypoints + (num_waypoints - 1) * num_interp_steps
-            collision_rate = total_collisions / total_configs * 100
+            total_configs = num_waypoints + total_interp_points
+            collision_rate = (total_collisions / total_configs * 100) if total_configs > 0 else 0.0
         else:
             total_configs = num_waypoints
-            collision_rate = num_collisions / num_waypoints * 100
+            collision_rate = (num_collisions / total_configs * 100) if total_configs > 0 else 0.0
 
         results = {
             'total_waypoints': num_waypoints,
             'total_configs_checked': configs_checked,
             'interpolate': interpolate,
             'num_interp_steps': num_interp_steps if interpolate else 0,
+            'total_interpolated_configs': total_interp_points if interpolate else 0,
             'num_collisions': num_collisions,
             'num_segment_collisions': num_segment_collisions if interpolate else 0,
             'total_collisions': total_collisions,
@@ -1129,7 +1222,14 @@ class COALCollisionChecker:
             'collision_indices': collision_indices,
             'collision_segments': collision_segments if interpolate else [],
             'collision_free_indices': collision_free_indices,
-            'link_collisions': dict(link_collision_counter) if show_link_collisions else {}
+            'link_collisions': dict(link_collision_counter) if show_link_collisions else {},
+            'segment_interp_counts': segment_step_counts if interpolate else [],
+            'adaptive_interp': adaptive_interp,
+            'adaptive_interp_params': {
+                'max_joint_step_deg': adaptive_max_joint_step_deg,
+                'min_steps': adaptive_min_steps,
+                'max_steps': adaptive_max_steps,
+            } if interpolate else None
         }
         results['collision_check_time_sec'] = time.perf_counter() - collision_timer_start
         results['reconfig_check_time_sec'] = 0.0
@@ -1142,7 +1242,7 @@ class COALCollisionChecker:
             reconfig_results = self.detect_joint_reconfigurations(
                 trajectory,
                 threshold=reconfig_threshold,
-                exclude_last_joint=True
+                exclude_last_joint=True,
             )
             results['reconfig_check_time_sec'] = time.perf_counter() - reconfig_timer_start
             results.update({
@@ -1183,7 +1283,11 @@ class COALCollisionChecker:
         show_link_collisions: bool = False,
         max_show: int = 10,
         interpolate: bool = True,
-        num_interp_steps: int = 10
+        num_interp_steps: int = 10,
+        adaptive_interp: bool = False,
+        adaptive_max_joint_step_deg: float = 2.0,
+        adaptive_min_steps: int = 0,
+        adaptive_max_steps: Optional[int] = None
     ) -> dict:
         """
         Check collisions only for specific segments of the trajectory
@@ -1195,7 +1299,11 @@ class COALCollisionChecker:
             show_link_collisions: Show which links are colliding
             max_show: Maximum number of collision details to show
             interpolate: If True, check intermediate configurations between waypoints
-            num_interp_steps: Number of interpolation steps between waypoints
+            num_interp_steps: Number of interpolation steps between waypoints (baseline)
+            adaptive_interp: Use adaptive interpolation density based on joint deltas
+            adaptive_max_joint_step_deg: Maximum joint delta (deg) between interpolated samples
+            adaptive_min_steps: Minimum interpolation steps per segment when adaptive mode is on
+            adaptive_max_steps: Optional cap on interpolation steps per segment
 
         Returns:
             Dictionary with collision statistics for the checked segments
@@ -1210,16 +1318,34 @@ class COALCollisionChecker:
 
         # Create a set of waypoints to check (endpoints of segments)
         waypoints_to_check = set()
-        for seg_idx in segment_indices:
-            if 0 <= seg_idx < num_waypoints - 1:
-                waypoints_to_check.add(seg_idx)
-                waypoints_to_check.add(seg_idx + 1)
+        valid_segments = [seg_idx for seg_idx in segment_indices if 0 <= seg_idx < num_waypoints - 1]
+        for seg_idx in valid_segments:
+            waypoints_to_check.add(seg_idx)
+            waypoints_to_check.add(seg_idx + 1)
+
+        segment_step_counts = []
+        total_interp_points = 0
+        if interpolate and num_waypoints > 1:
+            segment_step_counts = self._compute_segment_interp_counts(
+                trajectory,
+                num_interp_steps,
+                adaptive_interp,
+                adaptive_max_joint_step_deg,
+                adaptive_min_steps,
+                adaptive_max_steps
+            )
+            total_interp_points = int(sum(segment_step_counts[seg] for seg in valid_segments))
 
         if verbose:
             print(f"\nChecking {len(segment_indices)} segments (waypoint pairs: {len(waypoints_to_check)})...")
             if interpolate:
-                total_configs = len(waypoints_to_check) + len(segment_indices) * num_interp_steps
+                total_configs = len(waypoints_to_check) + total_interp_points
                 print(f"Total configurations to check: {total_configs:,}")
+                if adaptive_interp and segment_step_counts:
+                    nonzero_steps = [segment_step_counts[seg] for seg in valid_segments if segment_step_counts[seg] > 0]
+                    if nonzero_steps:
+                        print(f"  Adaptive interpolation: max joint step {adaptive_max_joint_step_deg:.2f} deg")
+                        print(f"  Segment steps for selection → min {min(nonzero_steps)}, max {max(nonzero_steps)}")
 
         shown_count = 0
         configs_checked = 0
@@ -1251,15 +1377,17 @@ class COALCollisionChecker:
 
         # Check interpolated segments
         if interpolate:
-            for seg_idx in segment_indices:
-                if seg_idx < 0 or seg_idx >= num_waypoints - 1:
-                    continue
-
+            for seg_idx in valid_segments:
                 start_config = trajectory[seg_idx]
                 end_config = trajectory[seg_idx + 1]
+                steps = segment_step_counts[seg_idx] if seg_idx < len(segment_step_counts) else num_interp_steps
+                steps = max(0, int(steps))
+
+                if steps <= 0:
+                    continue
 
                 interpolated_configs = self._generate_segment_interpolation(
-                    start_config, end_config, num_interp_steps
+                    start_config, end_config, steps
                 )
 
                 for interp_idx, interp_config in enumerate(interpolated_configs):
@@ -1271,7 +1399,7 @@ class COALCollisionChecker:
                     configs_checked += 1
 
                     if is_collision:
-                        alpha = (interp_idx + 1) / (num_interp_steps + 1)
+                        alpha = (interp_idx + 1) / (steps + 1)
                         collision_segments.append((seg_idx, alpha))
 
                         if show_link_collisions and link_info:
@@ -1291,6 +1419,7 @@ class COALCollisionChecker:
 
         results = {
             'configs_checked': configs_checked,
+            'total_configs_checked': configs_checked,
             'num_collisions': num_collisions,
             'num_segment_collisions': num_segment_collisions if interpolate else 0,
             'total_collisions': total_collisions,
@@ -1298,7 +1427,17 @@ class COALCollisionChecker:
             'collision_indices': collision_indices,
             'collision_segments': collision_segments if interpolate else [],
             'collision_free_indices': collision_free_indices,
-            'link_collisions': dict(link_collision_counter) if show_link_collisions else {}
+            'link_collisions': dict(link_collision_counter) if show_link_collisions else {},
+            'interpolate': interpolate,
+            'num_interp_steps': num_interp_steps if interpolate else 0,
+            'total_interpolated_configs': total_interp_points if interpolate else 0,
+            'segment_interp_counts': segment_step_counts if interpolate else [],
+            'adaptive_interp': adaptive_interp,
+            'adaptive_interp_params': {
+                'max_joint_step_deg': adaptive_max_joint_step_deg,
+                'min_steps': adaptive_min_steps,
+                'max_steps': adaptive_max_steps,
+            } if interpolate else None
         }
 
         return results
@@ -1429,7 +1568,7 @@ def save_trajectory_csv(
 
 
 def save_collision_report(
-    args,
+    trajectory_path: str,
     results,
     replan_summary: Optional[dict] = None,
     timing_info: Optional[Dict[str, float]] = None
@@ -1439,14 +1578,21 @@ def save_collision_report(
     (appends to the file so multiple runs are logged sequentially).
     """
     base_dir = Path(__file__).resolve().parent.parent
-    num_points = results.get('total_waypoints') or Path(args.trajectory).stem or "unknown"
+    # Extract directory number from trajectory path (e.g., data/trajectory/1158/... -> 1158)
+    traj_path = Path(trajectory_path)
+    parent_dir_name = traj_path.parent.name
+    # Use parent directory name if it looks like a number, otherwise use filename stem
+    if parent_dir_name.isdigit():
+        num_points = parent_dir_name
+    else:
+        num_points = traj_path.stem or "unknown"
     report_dir = base_dir / 'data' / 'collision' / str(num_points)
     report_dir.mkdir(parents=True, exist_ok=True)
 
     report_path = report_dir / 'collision.txt'
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     unique_segments = sorted({wp_idx for wp_idx, _ in results.get('collision_segments', [])})
-    mesh_info = ", ".join(args.mesh) if args.mesh else "None"
+    mesh_info = config.DEFAULT_MESH_FILE
     collision_free_configs = (
         results['total_configs_checked'] - results['total_collisions']
         if results['interpolate'] else results['num_collision_free']
@@ -1468,13 +1614,15 @@ def save_collision_report(
 
     lines = [
         f"=== Collision Report @ {timestamp} ===",
-        f"Trajectory: {args.trajectory}",
-        f"Robot URDF: {args.robot_urdf}",
-        f"Robot config: {args.robot_config}",
+        f"Trajectory: {trajectory_path}",
+        f"Robot URDF: {config.DEFAULT_ROBOT_URDF}",
+        f"Robot config: {config.DEFAULT_ROBOT_CONFIG_YAML}",
         f"Obstacle meshes: {mesh_info}",
-        f"Collision margin: {args.collision_margin}",
+        f"Collision margin: {config.COLLISION_MARGIN}",
         f"Interpolation enabled: {results['interpolate']}",
-        f"Interpolation steps: {results['num_interp_steps'] if results['interpolate'] else 0}",
+        f"Interpolation steps (default): {results['num_interp_steps'] if results['interpolate'] else 0}",
+        f"Interpolation mode: {'adaptive' if results.get('adaptive_interp') else 'uniform'}",
+        f"Interpolated configurations: {results.get('total_interpolated_configs', 0)}",
         "",
         f"Total waypoints: {results['total_waypoints']}",
         f"Total configurations checked: {results['total_configs_checked']}",
@@ -1898,18 +2046,39 @@ def merge_collision_results(
     original_configs = original_results['total_configs_checked']
     segment_configs = segment_results['configs_checked']
 
-    # Estimate configs that would have been checked for replanned segments in original
+    orig_segment_counts = original_results.get('segment_interp_counts', [])
+    new_segment_counts = segment_results.get('segment_interp_counts', [])
+
+    old_segment_interp = 0
+    for seg_idx in replanned_segments:
+        if seg_idx < len(orig_segment_counts):
+            old_segment_interp += orig_segment_counts[seg_idx]
+
     if original_results['interpolate']:
-        configs_per_segment = 2 + original_results['num_interp_steps']  # 2 endpoints + interp steps
-        old_segment_configs = len(replanned_segments) * configs_per_segment
+        old_segment_configs = len(waypoints_to_remove) + old_segment_interp
     else:
         old_segment_configs = len(waypoints_to_remove)
 
     total_configs_checked = original_configs - old_segment_configs + segment_configs
 
+    # Merge segment interpolation counts
+    if original_results['interpolate']:
+        if len(new_segment_counts) == len(orig_segment_counts) and len(orig_segment_counts) > 0:
+            merged_segment_counts = list(orig_segment_counts)
+            for seg_idx in replanned_segments:
+                if seg_idx < len(merged_segment_counts):
+                    merged_segment_counts[seg_idx] = new_segment_counts[seg_idx] if seg_idx < len(new_segment_counts) else 0
+        else:
+            # Length mismatch or missing data – fall back to new counts if available
+            merged_segment_counts = list(new_segment_counts) if new_segment_counts else list(orig_segment_counts)
+    else:
+        merged_segment_counts = []
+
+    new_total_interp = sum(merged_segment_counts)
+
     # Calculate collision rate
     if original_results['interpolate']:
-        total_possible = new_num_waypoints + (new_num_waypoints - 1) * original_results['num_interp_steps']
+        total_possible = new_num_waypoints + new_total_interp
         collision_rate = total_collisions / total_possible * 100 if total_possible > 0 else 0
     else:
         collision_rate = num_collisions / new_num_waypoints * 100 if new_num_waypoints > 0 else 0
@@ -1928,7 +2097,11 @@ def merge_collision_results(
         'collision_indices': sorted(all_collision_indices),
         'collision_segments': sorted(all_collision_segments),
         'collision_free_indices': sorted(all_collision_free_indices),
-        'link_collisions': dict(link_collisions)
+        'link_collisions': dict(link_collisions),
+        'segment_interp_counts': merged_segment_counts,
+        'total_interpolated_configs': new_total_interp if original_results['interpolate'] else 0,
+        'adaptive_interp': original_results.get('adaptive_interp', False),
+        'adaptive_interp_params': original_results.get('adaptive_interp_params')
     }
 
     # Add reconfiguration data from segment_results if available
@@ -1971,7 +2144,6 @@ def merge_collision_results(
 def attempt_motion_replan(
     trajectory: np.ndarray,
     checker: COALCollisionChecker,
-    args: argparse.Namespace,
     initial_results: dict,
 ) -> dict:
     """Attempt to repair colliding segments using CuRobo MotionGen."""
@@ -2018,15 +2190,15 @@ def attempt_motion_replan(
         checker.workbench_dimensions,
         checker.robot_mount_position,
         checker.robot_mount_dimensions,
-        args.mesh,
+        [config.DEFAULT_MESH_FILE],
     )
 
     planner = CuRoboMotionPlanner(
-        args.robot_config,
+        config.DEFAULT_ROBOT_CONFIG_YAML,
         world_cfg,
-        trajopt_tsteps=args.replan_trajopt_tsteps,
-        interpolation_dt=args.replan_interp_dt,
-        interpolation_steps=args.replan_interp_steps,
+        trajopt_tsteps=config.REPLAN_TRAJOPT_TSTEPS,
+        interpolation_dt=config.REPLAN_INTERP_DT,
+        interpolation_steps=config.REPLAN_INTERP_STEPS,
     )
 
     summary['attempted'] = True
@@ -2057,8 +2229,8 @@ def attempt_motion_replan(
     batch_results = planner.plan_segments_batch(
         batch_start_configs,
         batch_goal_configs,
-        timeout=args.replan_timeout,
-        max_attempts=args.replan_max_attempts,
+        timeout=config.REPLAN_TIMEOUT,
+        max_attempts=config.REPLAN_MAX_ATTEMPTS,
     )
     batch_end_time = time.time()
 
@@ -2127,9 +2299,13 @@ def attempt_motion_replan(
             new_traj,
             segment_indices=new_segments_to_check,
             verbose=False,
-            show_link_collisions=args.show_link_collisions,
-            interpolate=not args.no_interpolate,
-            num_interp_steps=args.interp_steps
+            show_link_collisions=config.COLLISION_SHOW_LINK_DETAILS,
+            interpolate=True,
+            num_interp_steps=config.COLLISION_INTERP_STEPS,
+            adaptive_interp=config.COLLISION_ADAPTIVE_INTERP,
+            adaptive_max_joint_step_deg=config.COLLISION_ADAPTIVE_MAX_JOINT_STEP_DEG,
+            adaptive_min_steps=config.COLLISION_ADAPTIVE_MIN_STEPS,
+            adaptive_max_steps=config.COLLISION_ADAPTIVE_MAX_STEPS
         )
 
         # Also recheck joint reconfigurations for the full new trajectory
@@ -2183,7 +2359,7 @@ def attempt_motion_replan(
     return summary
 
 
-def print_collision_summary(results: dict, args: argparse.Namespace, title: str):
+def print_collision_summary(results: dict, title: str):
     """Pretty-print collision statistics."""
     print("\n" + "=" * 70)
     print(title)
@@ -2191,8 +2367,12 @@ def print_collision_summary(results: dict, args: argparse.Namespace, title: str)
     print(f"Total waypoints:        {results['total_waypoints']}")
 
     if results['interpolate']:
+        total_interp = results.get('total_interpolated_configs', 0)
+        interp_label = f"default {results['num_interp_steps']} steps"
+        if results.get('adaptive_interp'):
+            interp_label += ", adaptive"
         print(f"Total configurations:   {results['total_configs_checked']:,} "
-              f"(with {results['num_interp_steps']} interpolation steps)")
+              f"(interpolated: {total_interp:,}, {interp_label})")
         print(f"Collisions at waypoints:    {results['num_collisions']}")
         print(f"Collisions in segments:     {results['num_segment_collisions']}")
         print(f"Total collisions:           {results['total_collisions']}")
@@ -2225,7 +2405,7 @@ def print_collision_summary(results: dict, args: argparse.Namespace, title: str)
         for wp_idx in unique_segments[:50]:
             print(f"  Waypoint {wp_idx}→{wp_idx+1}")
 
-    if args.show_link_collisions and results.get('link_collisions'):
+    if config.COLLISION_SHOW_LINK_DETAILS and results.get('link_collisions'):
         print(f"\nCollisions by link:")
         sorted_links = sorted(results['link_collisions'].items(), key=lambda x: x[1], reverse=True)
         total_link_collisions = results['total_collisions'] if results['interpolate'] else results['num_collisions']
@@ -2235,165 +2415,14 @@ def print_collision_summary(results: dict, args: argparse.Namespace, title: str)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Check trajectory collisions using COAL')
+    parser = argparse.ArgumentParser(
+        description='Check trajectory collisions using COAL (all config from config.py)'
+    )
     parser.add_argument(
         '--trajectory',
         type=str,
-        default='data/trajectory/joint_trajectory_dp_5000_base.csv',
+        required=True,
         help='Path to trajectory CSV file'
-    )
-    parser.add_argument(
-        '--robot_urdf',
-        type=str,
-        default=config.DEFAULT_ROBOT_URDF,
-        help='Path to robot URDF file'
-    )
-    parser.add_argument(
-        '--mesh',
-        type=str,
-        nargs='+',
-        default=[config.DEFAULT_MESH_FILE],
-        help='Paths to obstacle mesh files (Z-up coordinates)'
-    )
-    parser.add_argument(
-        '--robot_config',
-        type=str,
-        default=config.DEFAULT_ROBOT_CONFIG_YAML,
-        help='Path to CuRobo robot config YAML file (for collision spheres)'
-    )
-    parser.add_argument(
-        '--glass_position',
-        type=float,
-        nargs=3,
-        default=config.GLASS_POSITION.tolist(),
-        help='Glass object position in world frame (x y z)'
-    )
-    parser.add_argument(
-        '--table_position',
-        type=float,
-        nargs=3,
-        default=config.TABLE_POSITION.tolist(),
-        help='Table cuboid position in world frame (x y z)'
-    )
-    parser.add_argument(
-        '--table_dimensions',
-        type=float,
-        nargs=3,
-        default=config.TABLE_DIMENSIONS.tolist(),
-        help='Table cuboid dimensions (x y z) in meters'
-    )
-    parser.add_argument(
-        '--use_link_meshes',
-        action='store_true',
-        help='Use actual collision meshes from URDF (most accurate)'
-    )
-    parser.add_argument(
-        '--use_capsules',
-        action='store_true',
-        help='Use capsule approximations instead of spheres'
-    )
-    parser.add_argument(
-        '--mesh_base_path',
-        type=str,
-        default=config.MESH_BASE_PATH,
-        help='Base path for robot mesh files'
-    )
-    parser.add_argument(
-        '--collision_margin',
-        type=float,
-        default=config.COLLISION_MARGIN,
-        help='Safety margin for collision detection in meters (e.g., -0.05 for 5cm tolerance)'
-    )
-    parser.add_argument(
-        '--show_link_collisions',
-        action='store_true',
-        help='Show which links are colliding (detailed analysis)'
-    )
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Print detailed progress'
-    )
-    parser.add_argument(
-        '--no-interpolate',
-        action='store_true',
-        help='Disable interpolation between waypoints (only check discrete waypoints)'
-    )
-    parser.add_argument(
-        '--interp-steps',
-        type=int,
-        default=config.COLLISION_INTERP_STEPS,
-        help=f'Number of interpolation steps between waypoints (default: {config.COLLISION_INTERP_STEPS})'
-    )
-    parser.add_argument(
-        '--check-reconfig',
-        action='store_true',
-        default=True,
-        help='Check for joint reconfigurations (default: True)'
-    )
-    parser.add_argument(
-        '--no-check-reconfig',
-        action='store_false',
-        dest='check_reconfig',
-        help='Disable joint reconfiguration checking'
-    )
-    parser.add_argument(
-        '--reconfig-threshold',
-        type=float,
-        default=1.0,
-        help='Joint reconfiguration threshold in radians (default: 1.0)'
-    )
-    parser.add_argument(
-        '--parallel',
-        action='store_true',
-        help='Enable parallel collision checking using multiprocessing (faster for large trajectories)'
-    )
-    parser.add_argument(
-        '--num-workers',
-        type=int,
-        default=None,
-        help='Number of worker processes for parallel checking (default: auto-detect as cpu_count - 2)'
-    )
-    parser.add_argument(
-        '--attempt_replan',
-        action='store_true',
-        help='Attempt CuRobo motion planning for colliding/reconfiguring segments'
-    )
-    parser.add_argument(
-        '--replan_timeout',
-        type=float,
-        default=8.0,
-        help='Timeout (seconds) for each CuRobo motion planning query'
-    )
-    parser.add_argument(
-        '--replan_max_attempts',
-        type=int,
-        default=20,
-        help='Maximum attempts for each CuRobo planning request'
-    )
-    parser.add_argument(
-        '--collision_free_output',
-        type=str,
-        default=None,
-        help='Output CSV path for collision-free trajectory (default: same folder as input)'
-    )
-    parser.add_argument(
-        '--replan_interp_dt',
-        type=float,
-        default=0.05,
-        help='Interpolation dt for CuRobo MotionGen trajectories'
-    )
-    parser.add_argument(
-        '--replan_interp_steps',
-        type=int,
-        default=5000,
-        help='Interpolation steps used when generating CuRobo trajectories'
-    )
-    parser.add_argument(
-        '--replan_trajopt_tsteps',
-        type=int,
-        default=32,
-        help='Trajectory optimization timesteps for CuRobo planner'
     )
 
     args = parser.parse_args()
@@ -2403,7 +2432,7 @@ def main():
     print("COAL Collision Checker for Robot Trajectories")
     print("=" * 70)
     print("NOTE: Using COAL library (improved FCL) for better performance")
-    print("Execute with: omni_python coal_check.py [options]")
+    print("Execute with: omni_python coal_check.py --trajectory <path>")
     print("=" * 70)
 
     # Load trajectory
@@ -2412,52 +2441,64 @@ def main():
 
     # Initialize collision checker
     print(f"\n2. Initializing COAL collision checker")
-    print(f"   Robot URDF: {args.robot_urdf}")
-    print(f"   Robot config: {args.robot_config}")
-    print(f"   Obstacle meshes: {args.mesh}")
-    print(f"   Glass position: {args.glass_position}")
-    print(f"   Table position: {args.table_position}")
-    print(f"   Table dimensions: {args.table_dimensions}")
-    print(f"   Use link meshes: {args.use_link_meshes}")
-    print(f"   Use capsules: {args.use_capsules}")
+    print(f"   Robot URDF: {config.DEFAULT_ROBOT_URDF}")
+    print(f"   Robot config: {config.DEFAULT_ROBOT_CONFIG_YAML}")
+    print(f"   Obstacle meshes: {[config.DEFAULT_MESH_FILE]}")
+    print(f"   Glass position: {config.GLASS_POSITION}")
+    print(f"   Table position: {config.TABLE_POSITION}")
+    print(f"   Table dimensions: {config.TABLE_DIMENSIONS}")
+    print(f"   Use link meshes: {config.COLLISION_USE_LINK_MESHES}")
+    print(f"   Collision margin: {config.COLLISION_MARGIN}")
 
     checker = COALCollisionChecker(
-        robot_urdf_path=args.robot_urdf,
-        obstacle_mesh_paths=args.mesh,
-        glass_position=np.array(args.glass_position),
-        table_position=np.array(args.table_position),
-        table_dimensions=np.array(args.table_dimensions),
-        robot_config_path=args.robot_config,
-        use_capsules=args.use_capsules,
-        use_link_meshes=args.use_link_meshes,
-        mesh_base_path=args.mesh_base_path,
-        collision_margin=args.collision_margin
+        robot_urdf_path=config.DEFAULT_ROBOT_URDF,
+        obstacle_mesh_paths=[config.DEFAULT_MESH_FILE],
+        glass_position=config.GLASS_POSITION.copy(),
+        table_position=config.TABLE_POSITION.copy(),
+        table_dimensions=config.TABLE_DIMENSIONS.copy(),
+        wall_position=config.WALL_POSITION.copy(),
+        wall_dimensions=config.WALL_DIMENSIONS.copy(),
+        workbench_position=config.WORKBENCH_POSITION.copy(),
+        workbench_dimensions=config.WORKBENCH_DIMENSIONS.copy(),
+        robot_mount_position=config.ROBOT_MOUNT_POSITION.copy(),
+        robot_mount_dimensions=config.ROBOT_MOUNT_DIMENSIONS.copy(),
+        robot_config_path=config.DEFAULT_ROBOT_CONFIG_YAML,
+        use_link_meshes=config.COLLISION_USE_LINK_MESHES,
+        mesh_base_path=config.MESH_BASE_PATH,
+        collision_margin=config.COLLISION_MARGIN,
+        use_curobo_interpolation=config.COLLISION_USE_CUROBO_INTERP,
     )
 
     # Check trajectory
     print(f"\n3. Running collision detection with COAL")
-    if args.show_link_collisions:
+    if config.COLLISION_SHOW_LINK_DETAILS:
         print(f"   Link collision analysis enabled (showing first 10)")
-    if not args.no_interpolate:
-        print(f"   Interpolation enabled: {args.interp_steps} steps between waypoints")
-    else:
-        print(f"   Interpolation disabled: checking waypoints only")
-    if args.check_reconfig:
-        print(f"   Joint reconfiguration checking enabled (threshold: {args.reconfig_threshold} rad)")
+    print(f"   Interpolation enabled: {config.COLLISION_INTERP_STEPS} steps between waypoints")
+    interp_mode = "CuRobo GPU" if config.COLLISION_USE_CUROBO_INTERP else "CPU linear"
+    print(f"   Interpolation method: {interp_mode}")
+    if config.COLLISION_ADAPTIVE_INTERP:
+        print(f"   Adaptive interpolation enabled (max joint delta {config.COLLISION_ADAPTIVE_MAX_JOINT_STEP_DEG} deg)")
+    print(f"   Joint reconfiguration checking enabled (threshold: {config.RECONFIGURATION_THRESHOLD} rad)")
+    if config.COLLISION_PARALLEL:
+        print(f"   Parallel processing enabled")
 
     results = checker.check_trajectory(
         trajectory,
-        verbose=args.verbose,
-        show_link_collisions=args.show_link_collisions,
-        interpolate=not args.no_interpolate,
-        num_interp_steps=args.interp_steps,
-        check_reconfig=args.check_reconfig,
-        reconfig_threshold=args.reconfig_threshold,
-        parallel=args.parallel,
-        num_workers=args.num_workers
+        verbose=config.COLLISION_VERBOSE,
+        show_link_collisions=config.COLLISION_SHOW_LINK_DETAILS,
+        interpolate=True,
+        num_interp_steps=config.COLLISION_INTERP_STEPS,
+        check_reconfig=True,
+        reconfig_threshold=config.RECONFIGURATION_THRESHOLD,
+        parallel=config.COLLISION_PARALLEL,
+        num_workers=config.COLLISION_NUM_WORKERS,
+        adaptive_interp=config.COLLISION_ADAPTIVE_INTERP,
+        adaptive_max_joint_step_deg=config.COLLISION_ADAPTIVE_MAX_JOINT_STEP_DEG,
+        adaptive_min_steps=config.COLLISION_ADAPTIVE_MIN_STEPS,
+        adaptive_max_steps=config.COLLISION_ADAPTIVE_MAX_STEPS,
     )
 
-    print_collision_summary(results, args, "COLLISION CHECK RESULTS")
+    print_collision_summary(results, "COLLISION CHECK RESULTS")
 
     final_results = results
     replan_summary: Dict = {'attempted': False}
@@ -2472,34 +2513,34 @@ def main():
     # Attempt replanning if there are collisions OR reconfigurations
     needs_replan = results['total_collisions'] > 0 or results.get('num_reconfigurations', 0) > 0
 
-    if args.attempt_replan and needs_replan:
+    if config.REPLAN_ENABLED and needs_replan:
         print("\n4. Attempting CuRobo replanning for problematic segments...")
         replan_start_time = time.perf_counter()
-        replan_summary = attempt_motion_replan(trajectory, checker, args, results)
+        replan_summary = attempt_motion_replan(trajectory, checker, results)
         timing_info['replan_sec'] = time.perf_counter() - replan_start_time
         replan_summary['replan_time_sec'] = timing_info['replan_sec']
 
         # if replan_summary.get('success'):
         final_results = replan_summary['collision_results']
         trajectory = replan_summary['trajectory']
-        output_path = Path(args.collision_free_output) if args.collision_free_output else Path(args.trajectory).parent / 'collision_free_trajectory.csv'
+        output_path = Path(args.trajectory).parent / 'collision_free_trajectory.csv'
         collision_free_csv_path = save_trajectory_csv(trajectory, joint_names, output_path)
         replan_summary['output_path'] = str(collision_free_csv_path)
         print("\n✓ Collision-free trajectory generated via CuRobo.")
         print(f"Saved to: {collision_free_csv_path}")
-        print_collision_summary(final_results, args, "REPLANNED COLLISION CHECK RESULTS")
+        print_collision_summary(final_results, "REPLANNED COLLISION CHECK RESULTS")
         # else:
         #     print("\nCuRobo replanning unsuccessful.")
         #     if replan_summary.get('message'):
         #         print(f"Reason: {replan_summary['message']}")
-    elif args.attempt_replan:
+    elif config.REPLAN_ENABLED:
         print("\nNo collisions detected — skipping CuRobo replanning.")
         replan_summary['replan_time_sec'] = timing_info['replan_sec']
 
     timing_info['total_runtime_sec'] = time.perf_counter() - script_start_time
 
     report_path = save_collision_report(
-        args,
+        args.trajectory,
         final_results,
         replan_summary if replan_summary.get('attempted') else None,
         timing_info
@@ -2508,5 +2549,7 @@ def main():
 
     if collision_free_csv_path:
         print(f"- Collision-free trajectory saved to {collision_free_csv_path}")
+
+
 if __name__ == "__main__":
     main()

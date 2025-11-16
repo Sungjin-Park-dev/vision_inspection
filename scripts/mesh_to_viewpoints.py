@@ -652,6 +652,150 @@ def filter_viewpoints_by_dof(
     return filtered_viewpoints, num_violated
 
 
+def filter_downward_facing_viewpoints(
+    viewpoints: List[Viewpoint],
+    z_threshold: float = 0.0
+) -> Tuple[List[Viewpoint], int]:
+    """
+    Filter out downward-facing viewpoints (robot cannot access from below)
+
+    Args:
+        viewpoints: List of viewpoints to filter
+        z_threshold: Normal Z component threshold (default: 0.0)
+            - Viewpoints with normal Z < z_threshold are removed
+            - 0.0: Remove all downward-facing (Z < 0)
+            - -0.5: Remove only nearly vertical downward (Z < -0.5)
+
+    Returns:
+        filtered_viewpoints: List of viewpoints with normal Z >= z_threshold
+        num_removed: Number of viewpoints removed
+    """
+    filtered_viewpoints = []
+    num_removed = 0
+
+    for vp in viewpoints:
+        # vp.normal is camera direction (points toward surface)
+        # Surface normal = -vp.normal
+        surface_normal_z = -vp.normal[2]
+
+        if surface_normal_z >= z_threshold:
+            filtered_viewpoints.append(vp)
+        else:
+            num_removed += 1
+
+    print(f"Filtered downward-facing viewpoints:")
+    print(f"  Removed: {num_removed}")
+    print(f"  Remaining: {len(filtered_viewpoints)}")
+
+    return filtered_viewpoints, num_removed
+
+
+def apply_minimum_tilt_angle(
+    viewpoints: List[Viewpoint],
+    camera_spec: CameraSpec,
+    min_tilt_deg: float = 30.0
+) -> Tuple[List[Viewpoint], int]:
+    """
+    Apply minimum tilt angle to nearly-horizontal viewpoints
+
+    For viewpoints with surface normals that are nearly horizontal,
+    tilt them upward to ensure robot can approach from above.
+
+    IMPORTANT: To inspect the same Z-height region after tilting,
+    the viewpoint Z must be increased proportionally.
+
+    Args:
+        viewpoints: List of viewpoints
+        camera_spec: Camera specifications
+        min_tilt_deg: Minimum tilt angle from horizontal in degrees (default: 30)
+            - 0: Horizontal (side view)
+            - 90: Vertical (top view)
+
+    Returns:
+        adjusted_viewpoints: List of viewpoints with adjusted normals
+        num_adjusted: Number of viewpoints that were adjusted
+    """
+    min_tilt_rad = np.radians(min_tilt_deg)
+    min_z_component = np.sin(min_tilt_rad)  # Minimum |normal.z| for surface normal
+
+    adjusted_viewpoints = []
+    num_adjusted = 0
+    wd = camera_spec.get_working_distance_m()
+
+    print(f"Applying minimum tilt angle ({min_tilt_deg}°)...")
+
+    for vp in viewpoints:
+        # vp.normal is camera direction (points toward surface)
+        # Surface normal = -vp.normal
+        surface_normal = -vp.normal
+
+        # Check if surface normal is nearly horizontal
+        if abs(surface_normal[2]) < min_z_component:
+            # Adjust viewpoint to view from above at minimum tilt angle
+
+            # Compute current horizontal magnitude
+            horizontal_mag = np.sqrt(surface_normal[0]**2 + surface_normal[1]**2)
+
+            if horizontal_mag < 1e-6:
+                # Already vertical, no adjustment needed
+                adjusted_viewpoints.append(vp)
+                continue
+
+            # Get original surface point
+            # vp.position = surface + surface_normal * wd
+            # vp.normal = -surface_normal (camera direction)
+            # Therefore: surface = vp.position + vp.normal * wd
+            surface_point = vp.position + vp.normal * wd
+
+            # Compute horizontal unit vector (direction from surface point to camera in XY plane)
+            horizontal_dir = np.array([surface_normal[0], surface_normal[1], 0], dtype=np.float32)
+            horizontal_dir = horizontal_dir / (horizontal_mag + 1e-8)
+
+            # New camera position to view surface_point at min_tilt_angle
+            # Camera must be:
+            # - At working_distance from surface_point
+            # - At min_tilt_angle above horizontal
+            #
+            # Decompose working distance:
+            # - Horizontal component: wd * cos(min_tilt_rad)
+            # - Vertical component: wd * sin(min_tilt_rad)
+
+            horizontal_distance = wd * np.cos(min_tilt_rad)
+            vertical_offset = wd * np.sin(min_tilt_rad)
+
+            # New viewpoint position
+            # Move horizontally along horizontal_dir, then up in Z
+            adjusted_position = surface_point + horizontal_dir * horizontal_distance
+            adjusted_position[2] += vertical_offset
+
+            # Camera direction: from viewpoint toward surface_point
+            adjusted_camera_direction = surface_point - adjusted_position
+            adjusted_camera_direction = adjusted_camera_direction / np.linalg.norm(adjusted_camera_direction)
+
+            # Verify working distance (sanity check)
+            actual_distance = np.linalg.norm(adjusted_position - surface_point)
+
+            # Create adjusted viewpoint (coverage_area stays same - viewing same region)
+            adjusted_vp = Viewpoint(
+                position=adjusted_position,
+                normal=adjusted_camera_direction,
+                coverage_area=vp.coverage_area,
+                depth_variation=vp.depth_variation
+            )
+
+            adjusted_viewpoints.append(adjusted_vp)
+            num_adjusted += 1
+        else:
+            # Normal is already steep enough
+            adjusted_viewpoints.append(vp)
+
+    print(f"  Adjusted {num_adjusted} nearly-horizontal viewpoints")
+    print(f"  All viewpoints now view from >= {min_tilt_deg}° above horizontal")
+    print(f"  Viewpoint Z-positions adjusted to maintain inspection coverage")
+
+    return adjusted_viewpoints, num_adjusted
+
+
 def compute_voxel_based_coverage(
     viewpoints: List[Viewpoint],
     mesh: o3d.geometry.TriangleMesh,
@@ -931,6 +1075,18 @@ def main():
     parser.add_argument('--voxel_size', type=float, default=2.0,
                         help='Voxel size in mm for coverage calculation (default: 2.0)')
 
+    # Viewpoint filtering for robot accessibility
+    parser.add_argument('--filter_downward', action='store_true', default=True,
+                        help='Filter out downward-facing viewpoints (default: True)')
+    parser.add_argument('--no_filter_downward', dest='filter_downward', action='store_false',
+                        help='Disable downward-facing viewpoint filtering')
+    parser.add_argument('--apply_tilt', action='store_true', default=True,
+                        help='Apply minimum tilt angle to horizontal viewpoints (default: True)')
+    parser.add_argument('--no_apply_tilt', dest='apply_tilt', action='store_false',
+                        help='Disable tilt angle adjustment')
+    parser.add_argument('--min_tilt_angle', type=float, default=30.0,
+                        help='Minimum tilt angle from horizontal in degrees (default: 30.0)')
+
     # Visualization
     parser.add_argument('--visualize', action='store_true',
                         help='Visualize viewpoints with Open3D')
@@ -982,6 +1138,26 @@ def main():
     viewpoints = compute_viewpoints_from_surface(surface_points, surface_normals, camera_spec)
     print(f"  Generated {len(viewpoints)} viewpoints")
 
+    # Filter viewpoints for robot accessibility
+    num_downward_removed = 0
+    num_tilt_adjusted = 0
+
+    if args.filter_downward:
+        print(f"\n{'='*60}")
+        print("FILTERING DOWNWARD-FACING VIEWPOINTS")
+        print(f"{'='*60}")
+        viewpoints, num_downward_removed = filter_downward_facing_viewpoints(
+            viewpoints, z_threshold=0.0
+        )
+
+    if args.apply_tilt:
+        print(f"\n{'='*60}")
+        print("APPLYING MINIMUM TILT ANGLE")
+        print(f"{'='*60}")
+        viewpoints, num_tilt_adjusted = apply_minimum_tilt_angle(
+            viewpoints, camera_spec, min_tilt_deg=args.min_tilt_angle
+        )
+
     # Check DOF constraints if requested
     num_violated = 0
     if args.check_dof:
@@ -1003,6 +1179,16 @@ def main():
     print("=" * 60)
     print(f"Number of viewpoints: {stats['num_viewpoints']}")
     print(f"Mesh surface area: {stats['mesh_area_m2'] * 1e6:.2f} mm²")
+
+    # Print filtering statistics
+    if args.filter_downward or args.apply_tilt:
+        print(f"\nViewpoint filtering (robot accessibility):")
+        if args.filter_downward:
+            print(f"  Downward-facing removed: {num_downward_removed}")
+        if args.apply_tilt:
+            print(f"  Horizontal viewpoints adjusted: {num_tilt_adjusted}")
+            print(f"  Minimum tilt angle: {args.min_tilt_angle}°")
+            print(f"  Z-positions adjusted to maintain coverage height")
 
     # Print both coverage metrics if voxel coverage was computed
     if stats['voxel_coverage_ratio'] is not None:
