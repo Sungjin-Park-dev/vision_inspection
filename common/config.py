@@ -32,6 +32,7 @@ CAMERA_SENSOR_HEIGHT_PX = 3000
 CAMERA_PIXEL_SIZE_UM = 3.45
 
 # Field of View (mm)
+# CAMERA_FOV_WIDTH_MM = 41.0
 CAMERA_FOV_WIDTH_MM = 41.0
 CAMERA_FOV_HEIGHT_MM = 30.0
 
@@ -43,6 +44,24 @@ CAMERA_DEPTH_OF_FIELD_MM = 0.5
 
 # Overlap ratio between adjacent viewpoints (0.25 = 25% overlap)
 CAMERA_OVERLAP_RATIO = 0.5
+
+
+def quaternion_to_rotation_matrix(quat: np.ndarray) -> np.ndarray:
+    """
+    Convert quaternion to rotation matrix
+
+    Args:
+        quat: Quaternion in (w, x, y, z) format
+
+    Returns:
+        3x3 rotation matrix
+    """
+    w, x, y, z = quat
+    return np.array([
+        [1 - 2*(y*y + z*z),     2*(x*y - w*z),     2*(x*z + w*y)],
+        [    2*(x*y + w*z), 1 - 2*(x*x + z*z),     2*(y*z - w*x)],
+        [    2*(x*z - w*y),     2*(y*z + w*x), 1 - 2*(x*x + y*y)]
+    ], dtype=np.float64)
 
 
 def get_camera_working_distance_m() -> float:
@@ -72,7 +91,15 @@ def get_effective_coverage_mm() -> tuple:
 # ============================================================================
 
 # Glass object position in world frame (x, y, z)
-GLASS_POSITION = np.array([1.0, 0.0, -0.13], dtype=np.float64)
+# Glass -0.13
+# Phone -0.17
+# TV -0.145
+
+GLASS_POSITION = np.array([1.00, 0.0, -0.172], dtype=np.float64)
+
+# Glass object orientation in world frame (quaternion: w, x, y, z)
+# Identity quaternion = no rotation
+GLASS_ROTATION = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
 # Table cuboid position in world frame (x, y, z)
 TABLE_POSITION = np.array([1.0, 0.0, -0.425], dtype=np.float64)
@@ -108,7 +135,7 @@ ROBOT_MOUNT_DIMENSIONS = np.array([0.3, 0.3, 0.5], dtype=np.float64)
 # ============================================================================
 
 # Mesh files (Z-up coordinate system)
-DEFAULT_MESH_FILE = str(DATA_ROOT / "object" / "glass_zup.obj")
+DEFAULT_MESH_FILE = str(DATA_ROOT / "object" / "glass.obj")
 
 # Robot files
 DEFAULT_ROBOT_URDF = "ur_description/ur20.urdf"
@@ -131,31 +158,47 @@ IK_NUM_SEEDS = 20  # Number of random seeds for IK solver
 IK_ROTATION_THRESHOLD = 0.05  # Rotation error threshold (radians)
 IK_POSITION_THRESHOLD = 0.005  # Position error threshold (meters)
 
+# Collision checker cache sizes
+N_OBSTACLE_CUBOIDS = 30  # Maximum number of cuboid obstacles for collision cache
+N_OBSTACLE_MESH = 10  # Maximum number of mesh obstacles for collision cache
+
 # Joint selection (for DP algorithm in run_app_v3.py)
 JOINT_WEIGHTS = np.array([2.0, 2.0, 2.0, 1.0, 1.0, 1.0], dtype=np.float64)
-RECONFIGURATION_THRESHOLD = 1.0  # radians
+RECONFIGURATION_THRESHOLD = 1.0  # radians (deprecated, use RECONFIG_JOINT_THRESHOLD)
 RECONFIGURATION_PENALTY = 10.0
 MAX_MOVE_WEIGHT = 5.0
 
+# Enhanced reconfiguration detection (4-condition logic)
+RECONFIG_EE_FRAME_NAME = "tool0"  # End-effector frame for FK computation
+RECONFIG_POSITION_THRESHOLD = 0.2  # meters - max EE position change
+RECONFIG_ANGLE_THRESHOLD = 0.5  # radians (~28.6 degrees) - max EE z-axis angle change
+RECONFIG_JOINT_THRESHOLD = 1.0  # radians - max single joint change
+RECONFIG_DEVIATION_THRESHOLD = 0.1  # meters - max deviation from straight line
+RECONFIG_INTERPOLATION_SAMPLES = 2  # number of interpolation samples to check
+RECONFIG_FACTOR = 1.0  # global scaling factor for all thresholds
+
 # Collision checking
 COLLISION_MARGIN = 0.0  # Safety margin in meters (0 = no margin)
-COLLISION_INTERP_STEPS = 10  # Interpolation steps for collision checking
+COLLISION_INTERP_STEPS = 10  # Interpolation steps for collision checking (CPU linear only)
 COLLISION_USE_LINK_MESHES = False  # Use actual collision meshes from URDF
 COLLISION_SHOW_LINK_DETAILS = False  # Show detailed link collision info
 COLLISION_VERBOSE = True  # Print detailed progress
 COLLISION_PARALLEL = True  # Enable parallel collision checking
 COLLISION_NUM_WORKERS = None  # Number of workers for parallel (None = auto)
-COLLISION_USE_CUROBO_INTERP = False  # Use CuRobo GPU interpolation instead of CPU linear interpolation
 COLLISION_ADAPTIVE_INTERP = True  # Vary interpolation density per segment based on joint deltas
-COLLISION_ADAPTIVE_MAX_JOINT_STEP_DEG = 5.0  # Max joint delta (deg) allowed per interpolation gap
+COLLISION_INTERP_EXCLUDE_LAST_JOINT = True  # Exclude last joint when computing max delta for interpolation
+
+# interpolation할때 최소 단위
+COLLISION_ADAPTIVE_MAX_JOINT_STEP_DEG = 1.0  # Max joint delta (deg) allowed per interpolation gap
+COLLISION_ADAPTIVE_LAST_JOINT_STEP_DEG = 5.0  # Max step for last joint (wrist_3) - less critical for collisions
 COLLISION_ADAPTIVE_MIN_STEPS = 0  # Minimum interpolation steps per segment in adaptive mode
 COLLISION_ADAPTIVE_MAX_STEPS = None  # Optional cap on interpolation steps per segment (None = no cap)
 
 # Replanning parameters
-REPLAN_ENABLED = False  # Attempt replanning for collisions/reconfigurations
+REPLAN_ENABLED = True  # Attempt replanning for collisions/reconfigurations
 REPLAN_TIMEOUT = 8.0  # Timeout in seconds for each planning query
-REPLAN_MAX_ATTEMPTS = 20  # Maximum attempts for each planning request
-REPLAN_INTERP_DT = 0.05  # Interpolation dt for trajectories
+REPLAN_MAX_ATTEMPTS = 3  # Maximum attempts for each planning request
+REPLAN_INTERP_DT = 0.02  # Interpolation dt for trajectories
 REPLAN_INTERP_STEPS = 5000  # Interpolation steps for trajectories
 REPLAN_TRAJOPT_TSTEPS = 32  # Trajectory optimization timesteps
 
@@ -246,6 +289,7 @@ def print_config_summary():
 
     print("\nWorld Configuration:")
     print(f"  Glass position: {GLASS_POSITION}")
+    print(f"  Glass rotation (quat w,x,y,z): {GLASS_ROTATION}")
     print(f"  Table position: {TABLE_POSITION}")
     print(f"  Table dimensions: {TABLE_DIMENSIONS}")
     print(f"  Wall position: {WALL_POSITION}")

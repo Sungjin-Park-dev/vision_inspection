@@ -126,8 +126,49 @@ def estimate_required_viewpoints(
 `sample_points_uniform()` - Poisson disk sampling 사용
 
 #### Adaptive Sampling (선택)
+
+**옵션 1: Weighted Random Sampling** (기본)
 `sample_points_adaptive()` - 표면 곡률 기반 밀도 조정
 
+```python
+def sample_points_adaptive(
+    mesh: o3d.geometry.TriangleMesh,
+    num_points: int,
+    curvature_weight: float = 0.5
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Curvature 기반 weighted random sampling"""
+```
+
+**옵션 2: Curvature-Stratified Poisson Disk** (권장 ⭐)
+`sample_points_adaptive_poisson()` - Curvature 층별 Poisson disk sampling
+
+```python
+def sample_points_adaptive_poisson(
+    mesh: o3d.geometry.TriangleMesh,
+    num_points: int,
+    curvature_weight: float = 0.5,
+    num_strata: int = 3
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Curvature-stratified Poisson disk sampling
+
+    장점:
+    - 샘플 간 최소 거리 보장 (blue noise distribution)
+    - Curvature 기반 adaptive density
+    - 더 균일한 공간 분포
+    """
+```
+
+**동작 방식:**
+1. 메시를 curvature 기준으로 3개 층(strata)으로 분할:
+   - Low (0.00-0.33): 평면 영역
+   - Medium (0.33-0.67): 중간 곡률
+   - High (0.67-1.00): 모서리/코너
+2. 각 층에 샘플 수 할당 (high-curvature에 더 많이)
+3. 각 층에 독립적으로 Poisson disk sampling 적용
+4. 모든 층의 샘플 병합
+
+**Curvature 계산:**
 ```python
 def compute_surface_curvature(mesh: o3d.geometry.TriangleMesh) -> np.ndarray:
     """각 vertex의 곡률 추정 (normal variation 기반)"""
@@ -332,6 +373,7 @@ Tilting 후 (30도):
 
   # 샘플링 (자동 계산 사용 시 불필요)
   --adaptive_sampling \          # 곡률 기반 샘플링
+  --use_poisson_disk \           # Poisson disk 사용 (균일 분포)
   --curvature_weight 0.5 \       # 곡률 영향도 (0-1)
 
   # 로봇 접근성 필터링 (기본: 활성화)
@@ -376,6 +418,7 @@ Tilting 후 (30도):
 | 옵션 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
 | `--adaptive_sampling` | flag | False | 곡률 기반 적응형 샘플링 |
+| `--use_poisson_disk` | flag | False | Poisson disk 기반 adaptive sampling (균일 분포) |
 | `--curvature_weight` | float | 0.5 | 곡률 영향도 (0=균일, 1=최대) |
 
 #### 로봇 접근성
@@ -546,7 +589,7 @@ Done!
 - 바닥면 제거 및 30도 tilting 적용
 - `data/viewpoint/{N}/viewpoints.h5` 자동 생성
 
-### 예시 2: 적응형 샘플링
+### 예시 2: 적응형 샘플링 (Weighted Random)
 
 ```bash
 /isaac-sim/python.sh scripts/mesh_to_viewpoints.py \
@@ -558,6 +601,41 @@ Done!
 **효과:**
 - 고곡률 영역(모서리, 코너)에 더 많은 viewpoint
 - `curvature_weight=0.8`: 공격적인 적응형 샘플링
+- Weighted random sampling (샘플 clustering 가능)
+
+### 예시 2b: 적응형 Poisson Disk 샘플링 (권장 ⭐)
+
+```bash
+/isaac-sim/python.sh scripts/mesh_to_viewpoints.py \
+  --mesh_file data/object/phone.obj \
+  --adaptive_sampling \
+  --use_poisson_disk \
+  --curvature_weight 0.5
+```
+
+**효과:**
+- 고곡률 영역에 더 많은 viewpoint (adaptive)
+- 샘플 간 최소 거리 보장 (blue noise)
+- 더 균일한 공간 분포
+
+**출력 예시:**
+```
+Sampling 675 points using curvature-stratified Poisson disk sampling...
+  Curvature weight: 0.50
+  Number of strata: 3
+
+Stratum allocation:
+  low [0.00-0.33]:    220 samples (30.1% area, factor: 1.08)
+    → Sampled 220 points
+  medium [0.33-0.67]: 500 samples (59.3% area, factor: 1.25)
+    → Sampled 500 points
+  high [0.67-1.00]:   101 samples (10.6% area, factor: 1.42)
+    → Sampled 101 points
+
+Total sampled: 821 points from 3 strata
+  Adjusting from 821 to 675 points...
+Final count: 675 points
+```
 
 ### 예시 3: DOF 검증 및 위반 제거
 
@@ -727,8 +805,27 @@ camera_direction = -surface_normal
    - 같은 surface point를 보도록 보장
    - Working distance는 항상 유지
 
+5. **Adaptive Poisson Disk Sampling:**
+   - 층 간 경계에서 약간의 불연속 가능
+   - 샘플 수 조정 시 random downsampling 사용
+   - 각 층 내에서만 blue noise 특성 보장 (층 간은 보장 안됨)
+
+---
+
+## 샘플링 방법 비교
+
+| 특성 | Uniform | Adaptive (Random) | Adaptive (Poisson) |
+|------|---------|-------------------|-------------------|
+| 최소 거리 보장 | ✅ 전체 | ❌ 없음 | ✅ 층별 |
+| Curvature 적응 | ❌ 없음 | ✅ 가중치 | ✅ 층별 할당 |
+| 공간 분포 | 매우 균일 | 불균일 가능 | 균일 (층별) |
+| 계산 속도 | 빠름 | 빠름 | 빠름 |
+| 추천 용도 | 단순 객체 | 빠른 테스트 | **복잡한 객체 (권장)** |
+
 ---
 
 **작성일**: 2025-11-16
-**버전**: 3.0 (로봇 접근성 필터링 추가)
-**업데이트**: 바닥면 제거 및 수평면 tilting 기능 추가
+**버전**: 3.1 (Curvature-Stratified Poisson Disk 추가)
+**업데이트**:
+- v3.0: 바닥면 제거 및 수평면 tilting 기능 추가
+- v3.1: Adaptive Poisson disk sampling 추가 (`--use_poisson_disk`)

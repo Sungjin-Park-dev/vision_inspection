@@ -3,7 +3,7 @@
 Compute IK Solutions and Check Collisions (CuRobo only)
 
 This script:
-1. Loads TSP tour result (viewpoints in optimized order)
+1. Loads viewpoints file (surface positions and normals)
 2. Initializes CuRobo IK solver and collision checker (no Isaac Sim needed)
 3. Computes IK solutions for each viewpoint using EAIK
 4. Checks collision constraints for each IK solution
@@ -11,8 +11,8 @@ This script:
 
 Usage:
     python scripts/compute_ik_solutions.py \\
-        --tsp_tour data/tour/tour_3000.h5 \\
-        --output data/ik/ik_solutions_3000.h5 \\
+        --viewpoints data/viewpoint/3000/viewpoints.h5 \\
+        --output data/ik/3000/ik_solutions.h5 \\
         --robot ur20.yml
 """
 
@@ -55,7 +55,10 @@ from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 # Local Imports
 # ============================================================================
 from common import config
+from common.cli_utils import print_section_header, print_key_value, print_success
 from common.coordinate_utils import normalize_vectors, offset_points_along_normals
+from common.world_setup import setup_collision_world
+from common.trajectory_io import load_viewpoints_hdf5
 from common.ik_utils import (
     Viewpoint,
     compute_ik_eaik,
@@ -70,7 +73,7 @@ from common.ik_utils import (
 @dataclass
 class ComputeConfig:
     """Configuration for IK computation"""
-    tsp_tour_path: str
+    viewpoints_path: str
     output_path: Optional[str]
     robot_config_file: str
 
@@ -78,6 +81,7 @@ class ComputeConfig:
     table_position: np.ndarray = field(default_factory=lambda: config.TABLE_POSITION.copy())
     table_dimensions: np.ndarray = field(default_factory=lambda: config.TABLE_DIMENSIONS.copy())
     glass_position: np.ndarray = field(default_factory=lambda: config.GLASS_POSITION.copy())
+    glass_rotation: np.ndarray = field(default_factory=lambda: config.GLASS_ROTATION.copy())
     glass_mesh_file: str = config.DEFAULT_MESH_FILE
 
     # Additional obstacles
@@ -100,7 +104,7 @@ class ComputeConfig:
     def from_args(cls, args: argparse.Namespace) -> 'ComputeConfig':
         """Create configuration from command line arguments"""
         return cls(
-            tsp_tour_path=args.tsp_tour,
+            viewpoints_path=args.viewpoints,
             output_path=args.output,
             robot_config_file=args.robot,
         )
@@ -205,51 +209,57 @@ def transform_pose_to_world(
 
 
 # ============================================================================
-# TSP Tour Loading
+# Viewpoints Loading
 # ============================================================================
-def load_tsp_tour(tsp_tour_path: str) -> dict:
-    """Load TSP tour result from HDF5 file"""
-    from tsp_utils import load_tsp_result
-    return load_tsp_result(tsp_tour_path)
+def load_viewpoints_file(viewpoints_path: str) -> Tuple[np.ndarray, np.ndarray, dict]:
+    """Load viewpoints from HDF5 file
+
+    Returns:
+        surface_positions: (N, 3) array of surface positions in meters
+        surface_normals: (N, 3) array of surface normals (unit vectors)
+        metadata: Dictionary with metadata and camera_spec
+    """
+    return load_viewpoints_hdf5(viewpoints_path)
 
 
-def create_viewpoints_from_tsp(
-    tsp_result: dict, cfg: ComputeConfig
+def create_viewpoints_from_file(
+    surface_positions: np.ndarray,
+    surface_normals: np.ndarray,
+    metadata: dict,
+    cfg: ComputeConfig
 ) -> ViewpointManager:
-    """Create ViewpointManager from TSP tour result
+    """Create ViewpointManager from viewpoints file
 
-    The TSP tour file stores surface positions and normals.
+    The viewpoints file stores surface positions and normals.
     This function:
-    1. Extracts points and normals in TSP visit order
+    1. Extracts surface points and normals
     2. Determines working distance from camera_spec or config
     3. Offsets surface positions to create camera viewpoints
     4. Creates local pose matrices for each viewpoint
 
-    Returns:
-        ViewpointManager with viewpoints in TSP order
-    """
-    # Extract tour data
-    tour_coords = tsp_result["tour"]["coordinates"]
-    tour_indices = tsp_result["tour"]["indices"]
-    normals = tsp_result["normals"]
-    tour_normals = normals[tour_indices]
+    Args:
+        surface_positions: (N, 3) array of surface positions
+        surface_normals: (N, 3) array of surface normals
+        metadata: Metadata dictionary from viewpoints file
+        cfg: Computation configuration
 
-    print(f"\n{'='*60}")
-    print("TSP TOUR DATA LOADING")
-    print(f"{'='*60}")
-    print(f"Loaded {len(tour_coords)} points in TSP-optimized visit order")
-    print(f"Coordinate system: Z-up")
-    print(f"\nCoordinate ranges:")
-    print(f"  X: [{tour_coords[:, 0].min():.4f}, {tour_coords[:, 0].max():.4f}]")
-    print(f"  Y: [{tour_coords[:, 1].min():.4f}, {tour_coords[:, 1].max():.4f}]")
-    print(f"  Z: [{tour_coords[:, 2].min():.4f}, {tour_coords[:, 2].max():.4f}]")
-    print(f"{'='*60}\n")
+    Returns:
+        ViewpointManager with viewpoints
+    """
+    print_section_header("VIEWPOINTS DATA LOADING", width=60)
+    print_key_value("Loaded viewpoints", len(surface_positions))
+    print_key_value("Coordinate system", "Z-up")
+    print("\nCoordinate ranges:")
+    print_key_value("X range", f"[{surface_positions[:, 0].min():.4f}, {surface_positions[:, 0].max():.4f}]")
+    print_key_value("Y range", f"[{surface_positions[:, 1].min():.4f}, {surface_positions[:, 1].max():.4f}]")
+    print_key_value("Z range", f"[{surface_positions[:, 2].min():.4f}, {surface_positions[:, 2].max():.4f}]")
+    print()
 
     # Determine working distance
     working_distance_m = cfg.normal_sample_offset
 
-    if 'metadata' in tsp_result and 'camera_spec' in tsp_result['metadata']:
-        camera_spec = tsp_result['metadata']['camera_spec']
+    if 'camera_spec' in metadata:
+        camera_spec = metadata['camera_spec']
         if 'working_distance_mm' in camera_spec:
             working_distance_m = camera_spec['working_distance_mm'] / 1000.0
             print(f"Using working distance from HDF5: {camera_spec['working_distance_mm']} mm")
@@ -263,10 +273,10 @@ def create_viewpoints_from_tsp(
     print(f"  Offsetting by {working_distance_m*1000:.1f} mm along surface normals")
 
     # Offset surface points to camera positions
-    offset_points = offset_points_along_normals(tour_coords, tour_normals, working_distance_m)
+    offset_points = offset_points_along_normals(surface_positions, surface_normals, working_distance_m)
 
     # Camera looks toward surface (negative of surface normal)
-    approach_normals = -normalize_vectors(tour_normals)
+    approach_normals = -normalize_vectors(surface_normals)
 
     # Create viewpoints with local poses
     helper_z = np.array([0.0, 0.0, 1.0], dtype=np.float64)
@@ -298,7 +308,7 @@ def create_viewpoints_from_tsp(
 
         viewpoints.append(Viewpoint(index=int(point_idx), local_pose=pose_matrix))
 
-    print(f"Generated {len(viewpoints)} viewpoints in TSP order")
+    print(f"Generated {len(viewpoints)} viewpoints")
 
     return ViewpointManager(
         viewpoints=viewpoints,
@@ -310,8 +320,8 @@ def create_viewpoints_from_tsp(
 # ============================================================================
 # CuRobo IK Solver Setup
 # ============================================================================
-def setup_collision_world(cfg: ComputeConfig) -> WorldConfig:
-    """Setup collision world configuration
+def setup_collision_world_for_ik(cfg: ComputeConfig) -> WorldConfig:
+    """Setup collision world configuration using common utility
 
     Args:
         cfg: Computation configuration
@@ -319,82 +329,21 @@ def setup_collision_world(cfg: ComputeConfig) -> WorldConfig:
     Returns:
         WorldConfig with table, glass, and additional obstacles
     """
-    print(f"\n{'='*60}")
-    print("SETTING UP COLLISION WORLD")
-    print(f"{'='*60}")
+    print_section_header("SETTING UP COLLISION WORLD", width=60)
 
-    # Load base world config (table)
-    world_cfg_table = WorldConfig.from_dict(
-        load_yaml(join_path(get_world_configs_path(), "collision_table.yml"))
-    )
-    world_cfg_table.cuboid[0].pose[:3] = cfg.table_position
-    world_cfg_table.cuboid[0].dims[:3] = cfg.table_dimensions
-    world_cfg_table.cuboid[0].name = "table"
-
-    print(f"Table position: {cfg.table_position}")
-    print(f"Table dimensions: {cfg.table_dimensions}")
-
-    # Add wall cuboid
-    wall_cuboid_dict = {
-        "table": {
-            "dims": cfg.wall_dimensions.tolist(),
-            "pose": list(cfg.wall_position) + [1, 0, 0, 0]
-        }
-    }
-    wall_cfg = WorldConfig.from_dict({"cuboid": wall_cuboid_dict})
-    wall_cfg.cuboid[0].name = "wall"
-
-    print(f"Wall position: {cfg.wall_position}")
-    print(f"Wall dimensions: {cfg.wall_dimensions}")
-
-    # Add workbench cuboid
-    workbench_cuboid_dict = {
-        "table": {
-            "dims": cfg.workbench_dimensions.tolist(),
-            "pose": list(cfg.workbench_position) + [1, 0, 0, 0]
-        }
-    }
-    workbench_cfg = WorldConfig.from_dict({"cuboid": workbench_cuboid_dict})
-    workbench_cfg.cuboid[0].name = "workbench"
-
-    print(f"Workbench position: {cfg.workbench_position}")
-    print(f"Workbench dimensions: {cfg.workbench_dimensions}")
-
-    # Add robot mount cuboid
-    robot_mount_cuboid_dict = {
-        "table": {
-            "dims": cfg.robot_mount_dimensions.tolist(),
-            "pose": list(cfg.robot_mount_position) + [1, 0, 0, 0]
-        }
-    }
-    robot_mount_cfg = WorldConfig.from_dict({"cuboid": robot_mount_cuboid_dict})
-    robot_mount_cfg.cuboid[0].name = "robot_mount"
-
-    print(f"Robot mount position: {cfg.robot_mount_position}")
-    print(f"Robot mount dimensions: {cfg.robot_mount_dimensions}")
-
-    # Add glass mesh
-    glass_mesh = Mesh(
-        name="glass",
-        file_path=cfg.glass_mesh_file,
-        pose=list(cfg.glass_position) + [1, 0, 0, 0],  # position + quat (w,x,y,z)
-    )
-
-    print(f"Glass mesh: {cfg.glass_mesh_file}")
-    print(f"Glass position: {cfg.glass_position}")
-    print(f"{'='*60}\n")
-
-    # Combine all cuboids and glass mesh
-    all_cuboids = (
-        world_cfg_table.cuboid +
-        wall_cfg.cuboid +
-        workbench_cfg.cuboid +
-        robot_mount_cfg.cuboid
-    )
-
-    world_cfg = WorldConfig(
-        cuboid=all_cuboids,
-        mesh=[glass_mesh]
+    world_cfg = setup_collision_world(
+        table_position=cfg.table_position,
+        table_dimensions=cfg.table_dimensions,
+        wall_position=cfg.wall_position,
+        wall_dimensions=cfg.wall_dimensions,
+        workbench_position=cfg.workbench_position,
+        workbench_dimensions=cfg.workbench_dimensions,
+        robot_mount_position=cfg.robot_mount_position,
+        robot_mount_dimensions=cfg.robot_mount_dimensions,
+        mesh_files=[cfg.glass_mesh_file],
+        mesh_position=cfg.glass_position,
+        mesh_rotation=cfg.glass_rotation,
+        verbose=True
     )
 
     return world_cfg
@@ -410,21 +359,16 @@ def setup_ik_solver(cfg: ComputeConfig, world_cfg: WorldConfig) -> IKSolver:
     Returns:
         Configured IK solver
     """
-    print(f"\n{'='*60}")
-    print("INITIALIZING IK SOLVER")
-    print(f"{'='*60}")
+    print_section_header("INITIALIZING IK SOLVER", width=60)
 
     # Load robot configuration
     robot_cfg = load_yaml(join_path(get_robot_configs_path(), cfg.robot_config_file))["robot_cfg"]
-    print(f"Robot: {cfg.robot_config_file}")
+    print_key_value("Robot config", cfg.robot_config_file)
 
     # Create tensor device
     tensor_args = TensorDeviceType()
 
     # Create IK solver config
-    n_obstacle_cuboids = 30
-    n_obstacle_mesh = 10
-
     ik_config = IKSolverConfig.load_from_robot_config(
         robot_cfg,
         world_cfg,
@@ -436,22 +380,22 @@ def setup_ik_solver(cfg: ComputeConfig, world_cfg: WorldConfig) -> IKSolver:
         tensor_args=tensor_args,
         use_cuda_graph=True,
         collision_checker_type=CollisionCheckerType.MESH,
-        collision_cache={"obb": n_obstacle_cuboids, "mesh": n_obstacle_mesh},
+        collision_cache={"obb": config.N_OBSTACLE_CUBOIDS, "mesh": config.N_OBSTACLE_MESH},
     )
 
-    print(f"IK solver configuration:")
-    print(f"  Rotation threshold: {cfg.ik_rotation_threshold}")
-    print(f"  Position threshold: {cfg.ik_position_threshold}")
-    print(f"  Number of seeds: {cfg.ik_num_seeds}")
-    print(f"  Self collision check: True")
-    print(f"  Collision checker: MESH")
-    print(f"  Using CUDA graph: True")
+    print("\nIK solver configuration:")
+    print_key_value("Rotation threshold", f"{cfg.ik_rotation_threshold} rad")
+    print_key_value("Position threshold", f"{cfg.ik_position_threshold} m")
+    print_key_value("Number of seeds", cfg.ik_num_seeds)
+    print_key_value("Self collision check", True)
+    print_key_value("Collision checker", "MESH")
+    print_key_value("Using CUDA graph", True)
 
     # Create IK solver
     ik_solver = IKSolver(ik_config)
 
-    print(f"✓ IK solver initialized successfully")
-    print(f"{'='*60}\n")
+    print_success("IK solver initialized successfully")
+    print()
 
     return ik_solver
 
@@ -463,21 +407,21 @@ def process_viewpoints(
     cfg: ComputeConfig,
     ik_solver: IKSolver
 ) -> Tuple[ViewpointManager, dict]:
-    """Process viewpoints: load TSP, compute IK, check collisions
+    """Process viewpoints: load viewpoints file, compute IK, check collisions
 
     Returns:
-        Tuple of (viewpoint_manager, tsp_result)
+        Tuple of (viewpoint_manager, metadata)
     """
     print(f"\n{'='*60}")
     print("PROCESSING VIEWPOINTS")
     print(f"{'='*60}\n")
 
-    # Load TSP tour
-    print("Loading TSP tour...")
-    tsp_result = load_tsp_tour(cfg.tsp_tour_path)
+    # Load viewpoints
+    print("Loading viewpoints...")
+    surface_positions, surface_normals, metadata = load_viewpoints_file(cfg.viewpoints_path)
 
-    # Create viewpoints from TSP
-    viewpoint_mgr = create_viewpoints_from_tsp(tsp_result, cfg)
+    # Create viewpoints from file
+    viewpoint_mgr = create_viewpoints_from_file(surface_positions, surface_normals, metadata, cfg)
 
     # Glass object pose in world frame (identity rotation at glass_position)
     glass_world_pose = np.eye(4, dtype=np.float64)
@@ -519,7 +463,7 @@ def process_viewpoints(
     print(f"  With safe IK solutions: {with_safe}/{total}")
     print(f"{'='*60}\n")
 
-    return viewpoint_mgr, tsp_result
+    return viewpoint_mgr, metadata
 
 
 # ============================================================================
@@ -528,7 +472,7 @@ def process_viewpoints(
 def save_ik_solutions_hdf5(
     viewpoints: List[Viewpoint],
     save_path: str,
-    tsp_tour_path: str
+    viewpoints_path: str
 ):
     """Save all IK solutions to HDF5 file"""
     import h5py
@@ -544,7 +488,7 @@ def save_ik_solutions_hdf5(
         metadata_grp.attrs['num_viewpoints_with_solutions'] = num_with_solutions
         metadata_grp.attrs['num_viewpoints_with_safe_solutions'] = num_with_safe
         metadata_grp.attrs['timestamp'] = datetime.now().isoformat()
-        metadata_grp.attrs['tsp_tour_file'] = tsp_tour_path
+        metadata_grp.attrs['viewpoints_file'] = viewpoints_path
 
         for vp in viewpoints:
             vp_grp_name = f'viewpoint_{vp.index:04d}'
@@ -593,10 +537,10 @@ def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Compute IK solutions (CuRobo only, no Isaac Sim)")
     parser.add_argument(
-        "--tsp_tour",
+        "--viewpoints",
         type=str,
         required=True,
-        help="Path to TSP tour result file (.h5)"
+        help="Path to viewpoints file (.h5)"
     )
     parser.add_argument(
         "--output",
@@ -614,40 +558,43 @@ def main():
 
     cfg = ComputeConfig.from_args(args)
 
-    print(f"\n{'='*60}")
-    print("COMPUTE IK SOLUTIONS (CuRobo only)")
-    print(f"{'='*60}")
-    print(f"TSP tour: {cfg.tsp_tour_path}")
-    print(f"Robot config: {cfg.robot_config_file}")
-    print(f"Mode: CuRobo only (no Isaac Sim simulation)")
-    print(f"{'='*60}\n")
+    print_section_header("COMPUTE IK SOLUTIONS (CuRobo only)", width=60)
+    print_key_value("Viewpoints file", cfg.viewpoints_path)
+    print_key_value("Robot config", cfg.robot_config_file)
+    print_key_value("Mode", "CuRobo only (no Isaac Sim simulation)")
+    print()
+
+    start_time = perf_counter()
 
     # Setup collision world
-    world_cfg = setup_collision_world(cfg)
+    world_cfg = setup_collision_world_for_ik(cfg)
 
     # Setup IK solver
     ik_solver = setup_ik_solver(cfg, world_cfg)
 
     # Process viewpoints
-    viewpoint_mgr, tsp_result = process_viewpoints(cfg, ik_solver)
+    viewpoint_mgr, metadata = process_viewpoints(cfg, ik_solver)
 
     # Determine output path
     if cfg.output_path is None:
-        num_points = tsp_result['metadata']['num_points']
+        num_points = metadata['num_viewpoints']
         output_dir = f'data/ik/{num_points}'
         os.makedirs(output_dir, exist_ok=True)
         output_path = f'{output_dir}/ik_solutions.h5'
     else:
         output_path = cfg.output_path
 
+    print(f"Total time: {perf_counter() - start_time:.2f} s")
+
     # Save IK solutions
     save_ik_solutions_hdf5(
         viewpoint_mgr.viewpoints,
         output_path,
-        cfg.tsp_tour_path
+        cfg.viewpoints_path
     )
 
     print("\n✓ IK computation complete!")
+
 
 
 if __name__ == "__main__":

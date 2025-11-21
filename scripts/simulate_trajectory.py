@@ -7,9 +7,12 @@ This script:
 2. Initializes Isaac Sim world with robot and glass object
 3. Executes trajectory and visualizes robot motion
 
+The trajectory is executed directly without additional interpolation.
+Use collision-checked trajectory from curobo_check.py for collision-free execution.
+
 Usage:
     omni_python scripts/simulate_trajectory.py \\
-        --trajectory data/trajectory/3000/joint_trajectory_dp.csv \\
+        --trajectory data/trajectory/3000/joint_trajectory_dp_curobo_interpolated.csv \\
         --robot ur20.yml \\
         --visualize_spheres
 """
@@ -21,6 +24,7 @@ import argparse
 import csv
 import os
 import sys
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, List
@@ -72,8 +76,26 @@ parser.add_argument(
 parser.add_argument(
     "--interpolation_steps",
     type=int,
-    default=60,
-    help="Number of interpolation steps between waypoints (default: 60)"
+    default=None,
+    help="Fixed number of interpolation steps between waypoints (overrides adaptive mode)"
+)
+parser.add_argument(
+    "--steps_per_radian",
+    type=float,
+    default=50.0,
+    help="Number of interpolation steps per radian of joint movement (adaptive mode, default: 30.0)"
+)
+parser.add_argument(
+    "--min_steps",
+    type=int,
+    default=5,
+    help="Minimum interpolation steps for adaptive mode (default: 5)"
+)
+parser.add_argument(
+    "--max_steps",
+    type=int,
+    default=100,
+    help="Maximum interpolation steps for adaptive mode (default: 100)"
 )
 args = parser.parse_args()
 
@@ -121,7 +143,10 @@ from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 # Local Imports
 # ============================================================================
 from common import config
+from common.cli_utils import print_section_header, print_key_value, print_success
 from common.interpolation_utils import generate_interpolated_path
+from common.world_setup import setup_collision_world
+from common.trajectory_io import load_trajectory_csv
 from utilss.simulation_helper import add_extensions, add_robot_to_scene
 
 
@@ -135,12 +160,18 @@ class SimulationConfig:
     robot_config_file: str
     headless_mode: str
     visualize_spheres: bool
-    interpolation_steps: int
+
+    # Interpolation parameters
+    interpolation_steps: int  # If set, overrides adaptive mode
+    steps_per_radian: float
+    min_steps: int
+    max_steps: int
 
     # World configuration
     table_position: np.ndarray = field(default_factory=lambda: config.TABLE_POSITION.copy())
     table_dimensions: np.ndarray = field(default_factory=lambda: config.TABLE_DIMENSIONS.copy())
     glass_position: np.ndarray = field(default_factory=lambda: config.GLASS_POSITION.copy())
+    glass_rotation: np.ndarray = field(default_factory=lambda: config.GLASS_ROTATION.copy())
 
     # Additional obstacles
     wall_position: np.ndarray = field(default_factory=lambda: config.WALL_POSITION.copy())
@@ -159,6 +190,9 @@ class SimulationConfig:
             headless_mode=args.headless,
             visualize_spheres=args.visualize_spheres,
             interpolation_steps=args.interpolation_steps,
+            steps_per_radian=args.steps_per_radian,
+            min_steps=args.min_steps,
+            max_steps=args.max_steps,
         )
 
 
@@ -175,37 +209,60 @@ class WorldState:
 # ============================================================================
 # File I/O
 # ============================================================================
-def load_joint_trajectory_csv(csv_path: str) -> List[np.ndarray]:
+def load_joint_trajectory_csv_for_sim(csv_path: str) -> List[np.ndarray]:
     """Load joint trajectory from CSV file
 
     Returns:
         List of joint configurations (each is 6-element array)
     """
-    print(f"\n{'='*60}")
-    print("LOADING JOINT TRAJECTORY")
-    print(f"{'='*60}")
-    print(f"Input file: {csv_path}")
+    print_section_header("LOADING JOINT TRAJECTORY", width=60)
+    print_key_value("Input file", csv_path)
 
-    joint_targets = []
+    # Use common utility to load trajectory
+    trajectory, joint_names = load_trajectory_csv(csv_path, joint_prefix="ur20-")
 
-    with open(csv_path, 'r') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            # Extract 6 joint values
-            joints = np.array([
-                float(row['ur20-shoulder_pan_joint']),
-                float(row['ur20-shoulder_lift_joint']),
-                float(row['ur20-elbow_joint']),
-                float(row['ur20-wrist_1_joint']),
-                float(row['ur20-wrist_2_joint']),
-                float(row['ur20-wrist_3_joint']),
-            ], dtype=np.float64)
-            joint_targets.append(joints)
+    # Convert to list of arrays
+    joint_targets = [np.array(config, dtype=np.float64) for config in trajectory]
 
-    print(f"Loaded {len(joint_targets)} waypoints")
-    print(f"{'='*60}\n")
+    print_key_value("Loaded waypoints", len(joint_targets))
+    print()
 
     return joint_targets
+
+
+def compute_adaptive_steps(
+    start: np.ndarray,
+    end: np.ndarray,
+    steps_per_radian: float,
+    min_steps: int,
+    max_steps: int
+) -> int:
+    """
+    Compute number of interpolation steps based on joint space distance
+
+    Args:
+        start: Starting joint configuration
+        end: Ending joint configuration
+        steps_per_radian: Number of steps per radian of movement
+        min_steps: Minimum number of steps
+        max_steps: Maximum number of steps
+
+    Returns:
+        Number of interpolation steps (clamped to [min_steps, max_steps])
+    """
+    # Exclude last joint (wrist_3) from distance calculation
+    # Last joint only affects tool rotation, not collision
+    start_excl_last = start[:-1] if len(start) > 1 else start
+    end_excl_last = end[:-1] if len(end) > 1 else end
+
+    # Compute Euclidean distance in joint space (excluding last joint)
+    distance = np.linalg.norm(end_excl_last - start_excl_last)
+
+    # Calculate steps proportional to distance
+    steps = int(distance * steps_per_radian)
+
+    # Clamp to [min_steps, max_steps]
+    return max(min_steps, min(steps, max_steps))
 
 
 # ============================================================================
@@ -255,20 +312,19 @@ def setup_glass_object_from_mesh(my_world: World, cfg: SimulationConfig, usd_hel
     """Setup glass object using mesh file"""
     mesh_file_path = config.DEFAULT_MESH_FILE
 
-    print(f"\n{'='*60}")
-    print("ADDING GLASS MESH TO STAGE")
-    print(f"{'='*60}")
-    print(f"Mesh file: {mesh_file_path}")
-    print(f"Position: {cfg.glass_position}")
-    print(f"{'='*60}\n")
+    print_section_header("ADDING GLASS MESH TO STAGE", width=60)
+    print_key_value("Mesh file", mesh_file_path)
+    print_key_value("Position", cfg.glass_position)
+    print()
 
     usd_helper.load_stage(my_world.stage)
+
 
     glass_mesh = Mesh(
         name="glass",
         file_path=mesh_file_path,
         pose=list(cfg.glass_position) + [1, 0, 0, 0],
-        color=[0.7, 0.85, 0.9, 0.3]
+        color=[1.0, 0.1, 0.1, 0.95]
     )
 
     glass_path = usd_helper.add_mesh_to_stage(
@@ -276,23 +332,23 @@ def setup_glass_object_from_mesh(my_world: World, cfg: SimulationConfig, usd_hel
         base_frame="/World"
     )
 
-    print(f"Glass mesh added at prim path: {glass_path}")
+    print_key_value("Glass prim path", glass_path)
 
     glass_prim = XFormPrim(glass_path)
 
     # Apply glass material (optional)
-    try:
-        glass_material = OmniGlass(
-            prim_path="/World/Looks/glass_mat",
-            color=np.array([0.7, 0.85, 0.9]),
-            ior=1.52,
-            depth=0.01,
-            thin_walled=False,
-        )
-        glass_prim.apply_visual_material(glass_material)
-        print("Applied OmniGlass material")
-    except Exception as e:
-        print(f"Warning: Could not apply glass material: {e}")
+    # try:
+    #     glass_material = OmniGlass(
+    #         prim_path="/World/Looks/glass_mat",
+    #         color=np.array([0.7, 0.85, 0.9]),
+    #         ior=1.52,
+    #         depth=0.01,
+    #         thin_walled=False,
+    #     )
+    #     glass_prim.apply_visual_material(glass_material)
+    #     print("Applied OmniGlass material")
+    # except Exception as e:
+    #     print(f"Warning: Could not apply glass material: {e}")
 
     return glass_prim
 
@@ -338,64 +394,31 @@ def setup_collision_checker(
     robot_cfg = robot_state['robot_cfg']
     robot_prim_path = robot_state['robot_prim_path']
 
-    # Setup world collision configuration
-    world_cfg_table = WorldConfig.from_dict(
-        load_yaml(join_path(get_world_configs_path(), "collision_table.yml"))
-    )
-    world_cfg_table.cuboid[0].pose[:3] = cfg.table_position
-    world_cfg_table.cuboid[0].dims[:3] = cfg.table_dimensions
-    world_cfg_table.cuboid[0].name = "table"
-
-    # Add wall cuboid
-    wall_cuboid_dict = {
-        "table": {
-            "dims": cfg.wall_dimensions.tolist(),
-            "pose": list(cfg.wall_position) + [1, 0, 0, 0]
-        }
-    }
-    wall_cfg = WorldConfig.from_dict({"cuboid": wall_cuboid_dict})
-    wall_cfg.cuboid[0].name = "wall"
-
-    # Add workbench cuboid
-    workbench_cuboid_dict = {
-        "table": {
-            "dims": cfg.workbench_dimensions.tolist(),
-            "pose": list(cfg.workbench_position) + [1, 0, 0, 0]
-        }
-    }
-    workbench_cfg = WorldConfig.from_dict({"cuboid": workbench_cuboid_dict})
-    workbench_cfg.cuboid[0].name = "workbench"
-
-    # Add robot mount cuboid
-    robot_mount_cuboid_dict = {
-        "table": {
-            "dims": cfg.robot_mount_dimensions.tolist(),
-            "pose": list(cfg.robot_mount_position) + [1, 0, 0, 0]
-        }
-    }
-    robot_mount_cfg = WorldConfig.from_dict({"cuboid": robot_mount_cuboid_dict})
-    robot_mount_cfg.cuboid[0].name = "robot_mount"
-
-    # Combine all cuboids
-    all_cuboids = (
-        world_cfg_table.cuboid +
-        wall_cfg.cuboid +
-        workbench_cfg.cuboid +
-        robot_mount_cfg.cuboid
+    # Setup world collision configuration using common utility
+    world_cfg = setup_collision_world(
+        table_position=cfg.table_position,
+        table_dimensions=cfg.table_dimensions,
+        wall_position=cfg.wall_position,
+        wall_dimensions=cfg.wall_dimensions,
+        workbench_position=cfg.workbench_position,
+        workbench_dimensions=cfg.workbench_dimensions,
+        robot_mount_position=cfg.robot_mount_position,
+        robot_mount_dimensions=cfg.robot_mount_dimensions,
+        mesh_files=[],  # No mesh obstacles for visualization
+        verbose=False
     )
 
+    # Add ground mesh (positioned below ground)
     world_cfg1 = WorldConfig.from_dict(
         load_yaml(join_path(get_world_configs_path(), "collision_table.yml"))
     ).get_mesh_world()
     world_cfg1.mesh[0].name += "_mesh"
     world_cfg1.mesh[0].pose[2] = -10.5
 
-    world_cfg = WorldConfig(cuboid=all_cuboids, mesh=world_cfg1.mesh)
+    # Combine cuboids and mesh obstacles
+    world_cfg = WorldConfig(cuboid=world_cfg.cuboid, mesh=world_cfg1.mesh)
 
     # Create IK solver (needed for sphere visualization)
-    n_obstacle_cuboids = 30
-    n_obstacle_mesh = 10
-
     ik_config = IKSolverConfig.load_from_robot_config(
         robot_cfg,
         world_cfg,
@@ -407,7 +430,7 @@ def setup_collision_checker(
         tensor_args=tensor_args,
         use_cuda_graph=False,
         collision_checker_type=CollisionCheckerType.MESH,
-        collision_cache={"obb": n_obstacle_cuboids, "mesh": n_obstacle_mesh},
+        collision_cache={"obb": config.N_OBSTACLE_CUBOIDS, "mesh": config.N_OBSTACLE_MESH},
     )
     ik_solver = IKSolver(ik_config)
 
@@ -436,9 +459,8 @@ def setup_collision_checker(
 
 def initialize_simulation(cfg: SimulationConfig) -> WorldState:
     """Initialize Isaac Sim world and all components"""
-    print(f"\n{'='*60}")
-    print("INITIALIZING SIMULATION")
-    print(f"{'='*60}\n")
+    print_section_header("INITIALIZING SIMULATION", width=60)
+    print()
 
     my_world = create_world()
     robot_state = setup_robot(my_world, cfg)
@@ -473,21 +495,26 @@ def run_simulation(
     cfg: SimulationConfig
 ):
     """Run Isaac Sim simulation with planned trajectory"""
-    print(f"\n{'='*60}")
-    print("STARTING SIMULATION")
-    print(f"{'='*60}")
-    print(f"Total waypoints: {len(joint_targets)}")
-    print(f"Interpolation steps: {cfg.interpolation_steps}")
-    print(f"{'='*60}\n")
+    print_section_header("STARTING SIMULATION", width=60)
+    print_key_value("Total waypoints", len(joint_targets))
+    print_key_value("Execution mode", "Direct (no interpolation)")
+    print("  Trajectory contains pre-computed collision-free configurations")
+    print("  Waypoints will be executed directly without additional interpolation")
+    if joint_targets:
+        print("  Last joint will stay fixed to its initial value")
+    print()
 
     # Setup trajectory queue
     target_queue: Deque[np.ndarray] = deque(joint_targets)
-    active_trajectory: List[np.ndarray] = []
-    trajectory_step = 0
+    fixed_last_joint_value = joint_targets[0][-1] if joint_targets else None
 
     step_counter = 0
     idle_counter = 0
-    viewpoint_counter = 0
+    waypoint_counter = 0
+
+    # Time tracking
+    start_time = None
+    end_time = None
 
     # Sphere visualization
     spheres = None
@@ -502,6 +529,11 @@ def run_simulation(
                 print("**** Click Play to start simulation *****")
             idle_counter += 1
             continue
+
+        # Start timer when simulation actually begins
+        if start_time is None:
+            start_time = time.time()
+            print(f"Simulation started at {time.strftime('%H:%M:%S')}")
 
         idle_counter = 0
         step_counter += 1
@@ -542,46 +574,31 @@ def run_simulation(
                     spheres[si].set_world_pose(position=np.ravel(s.position))
                     spheres[si].set_radius(float(s.radius))
 
-        # Execute trajectory
-        if active_trajectory and trajectory_step < len(active_trajectory):
-            joint_cmd = active_trajectory[trajectory_step]
-            world_state.robot.set_joint_positions(joint_cmd.tolist(), world_state.idx_list)
-            trajectory_step += 1
+        # Execute trajectory waypoints directly
+        # No interpolation - trajectory already contains all collision-checked configurations
+        if target_queue:
+            # Get next waypoint and execute directly
+            next_waypoint = target_queue.popleft()
 
-            if trajectory_step >= len(active_trajectory):
-                active_trajectory.clear()
-                trajectory_step = 0
+            # Keep last joint locked to avoid rotating the tool during playback
+            if fixed_last_joint_value is not None and next_waypoint.size > 0:
+                next_waypoint = np.copy(next_waypoint)
+                next_waypoint[-1] = fixed_last_joint_value
 
-        elif target_queue:
-            # Reached viewpoint
-            viewpoint_counter += 1
-
-            # Get next target
-            next_target = target_queue.popleft()
-            current_state = get_active_joint_positions(world_state.robot, world_state.idx_list)
-
-            active_trajectory = generate_interpolated_path(
-                current_state,
-                next_target,
-                cfg.interpolation_steps
-            )
-            trajectory_step = 0
-
-            if not active_trajectory:
-                active_trajectory = [next_target]
-
-            joint_cmd = active_trajectory[trajectory_step]
-            world_state.robot.set_joint_positions(joint_cmd.tolist(), world_state.idx_list)
-            trajectory_step += 1
-
-            if trajectory_step >= len(active_trajectory):
-                active_trajectory.clear()
-                trajectory_step = 0
+            world_state.robot.set_joint_positions(next_waypoint.tolist(), world_state.idx_list)
+            waypoint_counter += 1
 
         # Check if trajectory complete
-        if not target_queue and not active_trajectory:
-            print(f"\n✓ Simulation completed!")
-            print(f"Viewpoints reached: {viewpoint_counter}")
+        if not target_queue:
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+
+            print_section_header("SIMULATION COMPLETED", width=60)
+            print_key_value("Waypoints executed", waypoint_counter)
+            print_key_value("Total execution time", f"{elapsed_time:.2f}s ({elapsed_time/60:.2f} min)")
+            print_key_value("Average time per waypoint", f"{elapsed_time/waypoint_counter:.4f}s")
+            print_key_value("Waypoint execution rate", f"{waypoint_counter/elapsed_time:.2f} waypoints/s")
+            print()
             break
 
 
@@ -592,15 +609,13 @@ def main():
     """Main entry point"""
     cfg = SimulationConfig.from_args(args)
 
-    print(f"\n{'='*60}")
-    print("SIMULATE TRAJECTORY")
-    print(f"{'='*60}")
-    print(f"Trajectory: {cfg.trajectory_path}")
-    print(f"Robot config: {cfg.robot_config_file}")
-    print(f"{'='*60}\n")
+    print_section_header("SIMULATE TRAJECTORY", width=60)
+    print_key_value("Trajectory", cfg.trajectory_path)
+    print_key_value("Robot config", cfg.robot_config_file)
+    print()
 
     # Load joint trajectory
-    joint_targets = load_joint_trajectory_csv(cfg.trajectory_path)
+    joint_targets = load_joint_trajectory_csv_for_sim(cfg.trajectory_path)
 
     # Initialize simulation
     world_state = initialize_simulation(cfg)

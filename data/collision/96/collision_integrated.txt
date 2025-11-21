@@ -1,0 +1,999 @@
+=== Collision Report (CuRobo) @ 2025-11-18 11:38:25 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 872
+
+Total waypoints: 96
+Total configurations checked: 968
+Collisions at waypoints: 0
+Segment collisions (raw count): 359
+Total collisions: 359
+Collision-free configurations: 609
+Collision rate (%): 32.11
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 6->7, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 71, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 6, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 71, 72, 76, 89
+  Collision segments: 4
+    Segments: 6, 71, 72, 76
+  Replanning segments: 5
+    Segments: 6, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.022 s
+  Replanning:                          1.462 s
+  Total:                               1.486 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 11:38:27 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 879
+
+Total waypoints: 96
+Total configurations checked: 975
+Collisions at waypoints: 0
+Segment collisions (raw count): 365
+Total collisions: 365
+Collision-free configurations: 610
+Collision rate (%): 32.44
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 4
+    Segments: 67, 71, 72, 76
+  Replanning segments: 5
+    Segments: 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.002 s
+  Replanning:                          1.010 s
+  Total:                               1.014 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 11:38:28 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 880
+
+Total waypoints: 96
+Total configurations checked: 976
+Collisions at waypoints: 0
+Segment collisions (raw count): 374
+Total collisions: 374
+Collision-free configurations: 602
+Collision rate (%): 32.35
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 2->3, 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 6
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 2, 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 5
+    Segments: 2, 67, 71, 72, 76
+  Replanning segments: 6
+    Segments: 2, 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.023 s
+  Replanning:                          1.075 s
+  Total:                               1.100 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 11:38:29 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 882
+
+Total waypoints: 96
+Total configurations checked: 978
+Collisions at waypoints: 0
+Segment collisions (raw count): 372
+Total collisions: 372
+Collision-free configurations: 606
+Collision rate (%): 32.12
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 2->3, 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 6
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 2, 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 5
+    Segments: 2, 67, 71, 72, 76
+  Replanning segments: 6
+    Segments: 2, 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.002 s
+  Replanning:                          1.080 s
+  Total:                               1.084 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 11:38:30 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 880
+
+Total waypoints: 96
+Total configurations checked: 976
+Collisions at waypoints: 0
+Segment collisions (raw count): 373
+Total collisions: 373
+Collision-free configurations: 603
+Collision rate (%): 32.27
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 2->3, 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 6
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 2, 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 5
+    Segments: 2, 67, 71, 72, 76
+  Replanning segments: 6
+    Segments: 2, 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.002 s
+  Replanning:                          1.070 s
+  Total:                               1.074 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 11:38:32 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 872
+
+Total waypoints: 96
+Total configurations checked: 968
+Collisions at waypoints: 0
+Segment collisions (raw count): 356
+Total collisions: 356
+Collision-free configurations: 612
+Collision rate (%): 31.84
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 6->7, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 71, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 6, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 71, 72, 76, 89
+  Collision segments: 4
+    Segments: 6, 71, 72, 76
+  Replanning segments: 5
+    Segments: 6, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.002 s
+  Replanning:                          1.028 s
+  Total:                               1.032 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 11:38:33 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 880
+
+Total waypoints: 96
+Total configurations checked: 976
+Collisions at waypoints: 0
+Segment collisions (raw count): 374
+Total collisions: 374
+Collision-free configurations: 602
+Collision rate (%): 32.35
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 2->3, 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 6
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 2, 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 5
+    Segments: 2, 67, 71, 72, 76
+  Replanning segments: 6
+    Segments: 2, 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.002 s
+  Replanning:                          1.068 s
+  Total:                               1.072 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 11:38:34 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 870
+
+Total waypoints: 96
+Total configurations checked: 966
+Collisions at waypoints: 0
+Segment collisions (raw count): 352
+Total collisions: 352
+Collision-free configurations: 614
+Collision rate (%): 31.54
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 6->7, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 71, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 6, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 71, 72, 76, 89
+  Collision segments: 4
+    Segments: 6, 71, 72, 76
+  Replanning segments: 5
+    Segments: 6, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.002 s
+  Replanning:                          1.019 s
+  Total:                               1.023 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 11:38:35 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 880
+
+Total waypoints: 96
+Total configurations checked: 976
+Collisions at waypoints: 0
+Segment collisions (raw count): 364
+Total collisions: 364
+Collision-free configurations: 612
+Collision rate (%): 32.33
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 4
+    Segments: 67, 71, 72, 76
+  Replanning segments: 5
+    Segments: 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.002 s
+  Replanning:                          1.041 s
+  Total:                               1.045 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 11:38:37 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 880
+
+Total waypoints: 96
+Total configurations checked: 976
+Collisions at waypoints: 0
+Segment collisions (raw count): 363
+Total collisions: 363
+Collision-free configurations: 613
+Collision rate (%): 32.24
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 4
+    Segments: 67, 71, 72, 76
+  Replanning segments: 5
+    Segments: 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.002 s
+  Replanning:                          1.022 s
+  Total:                               1.026 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 12:16:42 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 1709
+
+Total waypoints: 96
+Total configurations checked: 1805
+Collisions at waypoints: 0
+Segment collisions (raw count): 727
+Total collisions: 727
+Collision-free configurations: 1078
+Collision rate (%): 37.19
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 4
+    Segments: 67, 71, 72, 76
+  Replanning segments: 5
+    Segments: 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.023 s
+  Replanning:                          1.432 s
+  Total:                               1.457 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 12:16:43 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 1712
+
+Total waypoints: 96
+Total configurations checked: 1808
+Collisions at waypoints: 0
+Segment collisions (raw count): 726
+Total collisions: 726
+Collision-free configurations: 1082
+Collision rate (%): 37.08
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 4
+    Segments: 67, 71, 72, 76
+  Replanning segments: 5
+    Segments: 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.003 s
+  Replanning:                          1.012 s
+  Total:                               1.018 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 12:16:44 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 1709
+
+Total waypoints: 96
+Total configurations checked: 1805
+Collisions at waypoints: 0
+Segment collisions (raw count): 729
+Total collisions: 729
+Collision-free configurations: 1076
+Collision rate (%): 37.29
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 4
+    Segments: 67, 71, 72, 76
+  Replanning segments: 5
+    Segments: 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.003 s
+  Replanning:                          1.005 s
+  Total:                               1.011 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 12:16:45 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 1707
+
+Total waypoints: 96
+Total configurations checked: 1803
+Collisions at waypoints: 0
+Segment collisions (raw count): 729
+Total collisions: 729
+Collision-free configurations: 1074
+Collision rate (%): 37.33
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 4
+    Segments: 67, 71, 72, 76
+  Replanning segments: 5
+    Segments: 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.023 s
+  Replanning:                          1.031 s
+  Total:                               1.057 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 12:16:46 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 1710
+
+Total waypoints: 96
+Total configurations checked: 1806
+Collisions at waypoints: 0
+Segment collisions (raw count): 727
+Total collisions: 727
+Collision-free configurations: 1079
+Collision rate (%): 37.17
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 4
+    Segments: 67, 71, 72, 76
+  Replanning segments: 5
+    Segments: 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.003 s
+  Replanning:                          1.013 s
+  Total:                               1.019 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 12:16:48 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 1706
+
+Total waypoints: 96
+Total configurations checked: 1802
+Collisions at waypoints: 0
+Segment collisions (raw count): 734
+Total collisions: 734
+Collision-free configurations: 1068
+Collision rate (%): 37.03
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 2->3, 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 6
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 2, 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 5
+    Segments: 2, 67, 71, 72, 76
+  Replanning segments: 6
+    Segments: 2, 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.003 s
+  Replanning:                          1.089 s
+  Total:                               1.095 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 12:16:49 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 1708
+
+Total waypoints: 96
+Total configurations checked: 1804
+Collisions at waypoints: 0
+Segment collisions (raw count): 737
+Total collisions: 737
+Collision-free configurations: 1067
+Collision rate (%): 37.15
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 2->3, 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 6
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 2, 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 5
+    Segments: 2, 67, 71, 72, 76
+  Replanning segments: 6
+    Segments: 2, 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.003 s
+  Replanning:                          1.085 s
+  Total:                               1.091 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 12:16:50 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 1707
+
+Total waypoints: 96
+Total configurations checked: 1803
+Collisions at waypoints: 0
+Segment collisions (raw count): 733
+Total collisions: 733
+Collision-free configurations: 1070
+Collision rate (%): 37.53
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 4
+    Segments: 67, 71, 72, 76
+  Replanning segments: 5
+    Segments: 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.003 s
+  Replanning:                          1.006 s
+  Total:                               1.012 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 12:16:51 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 1693
+
+Total waypoints: 96
+Total configurations checked: 1789
+Collisions at waypoints: 0
+Segment collisions (raw count): 717
+Total collisions: 717
+Collision-free configurations: 1072
+Collision rate (%): 36.98
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 6->7, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 71, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 5
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 6, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 71, 72, 76, 89
+  Collision segments: 4
+    Segments: 6, 71, 72, 76
+  Replanning segments: 5
+    Segments: 6, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.003 s
+  Replanning:                          1.035 s
+  Total:                               1.041 s
+
+=== Collision Report (CuRobo) @ 2025-11-18 12:16:53 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/trajectory/96/integrated_pipeline_final.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 1708
+
+Total waypoints: 96
+Total configurations checked: 1804
+Collisions at waypoints: 0
+Segment collisions (raw count): 737
+Total collisions: 737
+Collision-free configurations: 1067
+Collision rate (%): 37.15
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 2->3, 67->68, 71->72, 72->73, 76->77
+
+Joint Reconfiguration Analysis:
+  Threshold: 1.00 rad
+  Excluded last joint: True
+  Total reconfigurations: 4
+  Reconfiguration rate: 4.2%
+  Reconfiguration segments: 67, 72, 76, 89
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 6
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 2, 67, 71, 72, 76, 89
+
+Segment Statistics:
+  Reconfiguration segments: 4
+    Segments: 67, 72, 76, 89
+  Collision segments: 5
+    Segments: 2, 67, 71, 72, 76
+  Replanning segments: 6
+    Segments: 2, 67, 71, 72, 76, 89
+
+Timing:
+  Reconfiguration + Collision checking: 0.003 s
+  Replanning:                          1.066 s
+  Total:                               1.072 s

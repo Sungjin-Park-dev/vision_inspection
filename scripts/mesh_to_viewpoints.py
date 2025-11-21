@@ -32,10 +32,11 @@ import open3d as o3d
 
 # Import common utilities
 from common import config
+from common.cli_utils import print_section_header, print_key_value
 from common.coordinate_utils import normalize_vectors, offset_points_along_normals
 
 # Import TSP utilities for saving results
-from tsp_utils import save_viewpoints
+from deprecated_scripts.tsp_utils import save_viewpoints
 
 
 @dataclass
@@ -236,6 +237,63 @@ def compute_local_overlap(
     return overlap
 
 
+def sample_points_uniform_with_normals(
+    mesh: o3d.geometry.TriangleMesh,
+    num_points: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Uniformly sample a mesh and guarantee non-empty points/normals.
+
+    Falls back to vertex-based sampling if Open3D returns an empty point cloud,
+    which avoids downstream AABB warnings from zero-length geometries.
+    """
+    if num_points <= 0:
+        return (
+            np.empty((0, 3), dtype=np.float32),
+            np.empty((0, 3), dtype=np.float32)
+        )
+
+    target = max(1, num_points)
+    pcd = mesh.sample_points_uniformly(number_of_points=target)
+    points = np.asarray(pcd.points, dtype=np.float32)
+
+    if len(points) == 0:
+        # Fall back to sampling vertices directly
+        vertices = np.asarray(mesh.vertices, dtype=np.float32)
+        if len(vertices) == 0:
+            return (
+                np.empty((0, 3), dtype=np.float32),
+                np.empty((0, 3), dtype=np.float32)
+            )
+
+        if not mesh.has_vertex_normals():
+            mesh.compute_vertex_normals()
+        vertex_normals = np.asarray(mesh.vertex_normals, dtype=np.float32)
+
+        indices = np.random.choice(
+            len(vertices),
+            size=min(num_points, len(vertices)),
+            replace=len(vertices) < num_points
+        )
+        return vertices[indices], vertex_normals[indices]
+
+    if not pcd.has_normals():
+        pcd.estimate_normals()
+    normals = np.asarray(pcd.normals, dtype=np.float32)
+
+    # Match requested count (Open3D may over/under sample slightly)
+    if len(points) != num_points:
+        indices = np.random.choice(
+            len(points),
+            size=num_points,
+            replace=len(points) < num_points
+        )
+        points = points[indices]
+        normals = normals[indices]
+
+    return points, normals
+
+
 def compute_surface_curvature(mesh: o3d.geometry.TriangleMesh) -> np.ndarray:
     """
     Compute approximate surface curvature at each vertex
@@ -385,29 +443,235 @@ def estimate_required_viewpoints(
     return estimated_viewpoints
 
 
-def sample_points_uniform(mesh: o3d.geometry.TriangleMesh, num_points: int) -> Tuple[np.ndarray, np.ndarray]:
+def sample_points_adaptive_poisson(
+    mesh: o3d.geometry.TriangleMesh,
+    num_points: int,
+    curvature_weight: float = 0.5,
+    base_overlap_ratio: float = config.CAMERA_OVERLAP_RATIO,
+    num_strata: int = 3
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Sample points uniformly on mesh surface using Poisson disk sampling
+    Sample points adaptively using Poisson disk sampling stratified by surface curvature
+
+    This approach combines the benefits of:
+    1. Poisson disk sampling: Maintains minimum distance between samples (blue noise)
+    2. Curvature-adaptive density: More samples in high-curvature regions
+
+    Method:
+    - Partition mesh into curvature strata (low/medium/high)
+    - Apply Poisson disk sampling independently to each stratum
+    - Allocate more samples to high-curvature strata
+    - Merge samples from all strata
 
     Args:
         mesh: Open3D triangle mesh
-        num_points: Number of points to sample
+        num_points: Target total number of points to sample
+        curvature_weight: Weight for curvature influence on sample allocation (0-1)
+            - 0.0: Uniform allocation across strata
+            - 1.0: Maximum bias toward high-curvature strata
+        base_overlap_ratio: Baseline overlap ratio (affects sample allocation)
+        num_strata: Number of curvature strata (default: 3 for low/medium/high)
 
     Returns:
         points: (N, 3) array of point coordinates
         normals: (N, 3) array of surface normals
     """
-    print(f"Sampling {num_points} points using Poisson disk sampling...")
-    pcd = mesh.sample_points_poisson_disk(number_of_points=num_points)
+    print(f"Sampling {num_points} points using curvature-stratified Poisson disk sampling...")
+    print(f"  Curvature weight: {curvature_weight:.2f}")
+    print(f"  Number of strata: {num_strata}")
 
-    # Estimate normals if not present
-    if not pcd.has_normals():
-        pcd.estimate_normals()
+    # Compute curvature
+    curvatures = compute_surface_curvature(mesh)
+    max_curvature = np.max(curvatures)
+    curvatures_norm = curvatures / (max_curvature + 1e-8)
 
-    points = np.asarray(pcd.points, dtype=np.float32)
-    normals = np.asarray(pcd.normals, dtype=np.float32)
+    # Get mesh data
+    vertices = np.asarray(mesh.vertices)
+    triangles = np.asarray(mesh.triangles)
 
-    print(f"Sampled {len(points)} points")
+    # Define curvature strata
+    if num_strata == 3:
+        strata_bounds = [(0.0, 0.33, 'low'), (0.33, 0.67, 'medium'), (0.67, 1.0, 'high')]
+    elif num_strata == 5:
+        strata_bounds = [
+            (0.0, 0.2, 'very_low'),
+            (0.2, 0.4, 'low'),
+            (0.4, 0.6, 'medium'),
+            (0.6, 0.8, 'high'),
+            (0.8, 1.0, 'very_high')
+        ]
+    else:
+        # Generic strata
+        strata_bounds = [(i/num_strata, (i+1)/num_strata, f'stratum_{i}')
+                         for i in range(num_strata)]
+
+    # Compute triangle areas and average curvature
+    tri_areas = []
+    tri_curvatures_norm = []
+
+    for tri in triangles:
+        v0, v1, v2 = vertices[tri[0]], vertices[tri[1]], vertices[tri[2]]
+        tri_area = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0))
+        tri_areas.append(tri_area)
+
+        # Average curvature of triangle vertices
+        tri_curv_norm = np.mean(curvatures_norm[tri])
+        tri_curvatures_norm.append(tri_curv_norm)
+
+    tri_areas = np.array(tri_areas)
+    tri_curvatures_norm = np.array(tri_curvatures_norm)
+    total_area = np.sum(tri_areas)
+
+    # Allocate samples to each stratum
+    all_points = []
+    all_normals = []
+
+    print(f"\nStratum allocation:")
+
+    for low, high, label in strata_bounds:
+        # Find triangles in this stratum
+        mask = (tri_curvatures_norm >= low) & (tri_curvatures_norm < high)
+
+        if not np.any(mask):
+            print(f"  {label} [{low:.2f}-{high:.2f}]: No triangles, skipping")
+            continue
+
+        stratum_area = np.sum(tri_areas[mask])
+        area_ratio = stratum_area / total_area
+
+        # Compute sample allocation for this stratum
+        # Base allocation: proportional to area
+        # Curvature bonus: proportional to curvature level
+        mid_curvature = (low + high) / 2
+        curvature_factor = 1.0 + curvature_weight * mid_curvature
+
+        # Number of samples for this stratum
+        stratum_samples = int(num_points * area_ratio * curvature_factor)
+        stratum_samples = max(1, stratum_samples)  # At least 1 sample
+
+        print(f"  {label} [{low:.2f}-{high:.2f}]: {stratum_samples} samples "
+              f"(area: {area_ratio*100:.1f}%, factor: {curvature_factor:.2f})")
+
+        # Extract triangles for this stratum
+        stratum_tri_indices = np.where(mask)[0]
+
+        # Create submesh for this stratum
+        # Need to create new mesh with selected triangles
+        stratum_triangles = triangles[mask]
+
+        # Find unique vertices used by these triangles
+        unique_vertex_indices = np.unique(stratum_triangles.flatten())
+
+        # Create mapping from old to new vertex indices
+        old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(unique_vertex_indices)}
+
+        # Create new mesh
+        stratum_mesh = o3d.geometry.TriangleMesh()
+        stratum_mesh.vertices = o3d.utility.Vector3dVector(vertices[unique_vertex_indices])
+
+        # Remap triangle indices
+        new_triangles = np.array([[old_to_new[v] for v in tri] for tri in stratum_triangles])
+        stratum_mesh.triangles = o3d.utility.Vector3iVector(new_triangles)
+
+        # Compute normals for submesh
+        stratum_mesh.compute_vertex_normals()
+        stratum_mesh.compute_triangle_normals()
+
+        # Sample points from this stratum using Poisson disk
+        stratum_points = np.empty((0, 3), dtype=np.float32)
+        stratum_normals = np.empty((0, 3), dtype=np.float32)
+        try:
+            stratum_pcd = stratum_mesh.sample_points_poisson_disk(
+                number_of_points=stratum_samples,
+                init_factor=5
+            )
+
+            # Get points and normals
+            stratum_points = np.asarray(stratum_pcd.points, dtype=np.float32)
+            if len(stratum_points) == 0:
+                raise RuntimeError("Poisson disk sampling returned 0 points")
+
+            # Estimate normals if not present
+            if not stratum_pcd.has_normals():
+                stratum_pcd.estimate_normals()
+
+            stratum_normals = np.asarray(stratum_pcd.normals, dtype=np.float32)
+
+        except Exception as e:
+            print(f"    ⚠ Warning: Poisson disk sampling failed for {label}: {e}")
+            print(f"    → Falling back to uniform sampling")
+
+            # Fallback: uniform sampling with extra safeguard against empty point clouds
+            stratum_points, stratum_normals = sample_points_uniform_with_normals(
+                stratum_mesh, stratum_samples
+            )
+
+        if len(stratum_points) == 0:
+            print(f"    ⚠ Warning: No samples generated for {label} stratum, skipping")
+            continue
+
+        all_points.append(stratum_points)
+        all_normals.append(stratum_normals)
+
+        print(f"    → Sampled {len(stratum_points)} points")
+
+
+    # Merge all samples
+    if len(all_points) == 0:
+        print("  ⚠ Warning: No samples generated, falling back to uniform Poisson disk")
+        try:
+            fallback_pcd = mesh.sample_points_poisson_disk(
+                number_of_points=num_points,
+                init_factor=5
+            )
+            fallback_points = np.asarray(fallback_pcd.points, dtype=np.float32)
+            if len(fallback_points) == 0:
+                raise RuntimeError("Poisson disk fallback returned 0 points")
+
+            if not fallback_pcd.has_normals():
+                fallback_pcd.estimate_normals()
+
+            fallback_normals = np.asarray(fallback_pcd.normals, dtype=np.float32)
+        except Exception as e:
+            print(f"    ⚠ Poisson disk fallback failed: {e}")
+            print("    → Using uniform sampling instead")
+            fallback_points, fallback_normals = sample_points_uniform_with_normals(
+                mesh, num_points
+            )
+        else:
+            return (
+                fallback_points,
+                fallback_normals
+            )
+
+        if len(fallback_points) == 0:
+            print("    ⚠ Unable to sample any points from mesh")
+        return fallback_points, fallback_normals
+
+    points = np.vstack(all_points)
+    normals = np.vstack(all_normals)
+
+    print(f"\nTotal sampled: {len(points)} points from {len(all_points)} strata")
+
+    # If we got too many or too few samples, adjust
+    if len(points) != num_points:
+        print(f"  Adjusting from {len(points)} to {num_points} points...")
+
+        if len(points) > num_points:
+            # Randomly downsample
+            indices = np.random.choice(len(points), num_points, replace=False)
+            points = points[indices]
+            normals = normals[indices]
+        else:
+            # Need more samples - add uniform samples to fill gap
+            gap = num_points - len(points)
+            print(f"  Adding {gap} uniform samples to reach target")
+            extra_points, extra_normals = sample_points_uniform_with_normals(mesh, gap)
+
+            points = np.vstack([points, extra_points])
+            normals = np.vstack([normals, extra_normals])
+
+    print(f"Final count: {len(points)} points")
     return points, normals
 
 
@@ -551,106 +815,6 @@ def compute_viewpoints_from_surface(
         viewpoints.append(vp)
 
     return viewpoints
-
-
-def filter_viewpoints_by_dof(
-    viewpoints: List[Viewpoint],
-    mesh: o3d.geometry.TriangleMesh,
-    camera_spec: CameraSpec,
-    remove_invalid: bool = False
-) -> Tuple[List[Viewpoint], int]:
-    """
-    Check depth of field constraints for each viewpoint
-
-    Args:
-        viewpoints: List of viewpoints to check
-        mesh: Original mesh for depth computation
-        camera_spec: Camera specifications
-        remove_invalid: If True, remove viewpoints that violate DOF constraints
-
-    Returns:
-        filtered_viewpoints: List of viewpoints (filtered if remove_invalid=True)
-        num_violated: Number of viewpoints that violated DOF constraints
-    """
-    dof_limit = camera_spec.get_dof_m()
-    fov_w, fov_h = camera_spec.get_fov_m()
-
-    # Create mesh scene for raycasting
-    mesh_legacy = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
-    scene = o3d.t.geometry.RaycastingScene()
-    scene.add_triangles(mesh_legacy)
-
-    filtered_viewpoints = []
-    num_violated = 0
-
-    print(f"Checking DOF constraints (limit: {camera_spec.depth_of_field_mm:.2f} mm)...")
-
-    for i, vp in enumerate(viewpoints):
-        # Sample rays within FOV to check depth variation
-        # Use a grid of rays (e.g., 5x5 grid)
-        grid_size = 5
-        rays_origin = []
-        rays_direction = []
-
-        # Build local coordinate frame
-        z_axis = vp.normal  # Camera looks in this direction
-
-        # Choose helper vector for cross product
-        helper = np.array([0, 0, 1]) if abs(z_axis[2]) < 0.9 else np.array([1, 0, 0])
-        x_axis = np.cross(helper, z_axis)
-        x_axis = x_axis / np.linalg.norm(x_axis)
-        y_axis = np.cross(z_axis, x_axis)
-
-        # Sample grid within FOV
-        for ix in range(grid_size):
-            for iy in range(grid_size):
-                u = (ix / (grid_size - 1) - 0.5) * fov_w
-                v = (iy / (grid_size - 1) - 0.5) * fov_h
-
-                # Ray origin at viewpoint position
-                rays_origin.append(vp.position)
-
-                # Ray direction: offset in local frame
-                direction = z_axis + u * x_axis + v * y_axis
-                direction = direction / np.linalg.norm(direction)
-                rays_direction.append(direction)
-
-        rays_origin = np.array(rays_origin, dtype=np.float32)
-        rays_direction = np.array(rays_direction, dtype=np.float32)
-
-        # Cast rays
-        rays = np.concatenate([rays_origin, rays_direction], axis=1)
-        ans = scene.cast_rays(o3d.core.Tensor(rays, dtype=o3d.core.Dtype.Float32))
-
-        # Get hit distances
-        t_hit = ans['t_hit'].numpy()
-
-        # Filter valid hits (not inf)
-        valid_hits = t_hit[np.isfinite(t_hit)]
-
-        if len(valid_hits) > 0:
-            depth_variation = valid_hits.max() - valid_hits.min()
-            vp.depth_variation = depth_variation
-
-            if depth_variation > dof_limit:
-                num_violated += 1
-                if not remove_invalid:
-                    filtered_viewpoints.append(vp)
-            else:
-                filtered_viewpoints.append(vp)
-        else:
-            # No valid hits - keep viewpoint but mark as zero variation
-            vp.depth_variation = 0.0
-            filtered_viewpoints.append(vp)
-
-    if remove_invalid:
-        print(f"Removed {num_violated} viewpoints violating DOF constraints")
-        print(f"Remaining viewpoints: {len(filtered_viewpoints)}")
-    else:
-        print(f"Found {num_violated} viewpoints violating DOF constraints (kept for analysis)")
-
-    return filtered_viewpoints, num_violated
-
 
 def filter_downward_facing_viewpoints(
     viewpoints: List[Viewpoint],
@@ -796,114 +960,6 @@ def apply_minimum_tilt_angle(
     return adjusted_viewpoints, num_adjusted
 
 
-def compute_voxel_based_coverage(
-    viewpoints: List[Viewpoint],
-    mesh: o3d.geometry.TriangleMesh,
-    camera_spec: CameraSpec,
-    voxel_size: float = 0.002  # 2mm voxels
-) -> Tuple[float, int, int]:
-    """
-    Compute accurate coverage using voxel grid (removes overlap)
-
-    Args:
-        viewpoints: List of viewpoints
-        mesh: Original mesh
-        camera_spec: Camera specifications
-        voxel_size: Voxel size in meters (default: 2mm)
-
-    Returns:
-        coverage_ratio: Actual coverage ratio (0-1)
-        covered_voxels: Number of covered voxels
-        total_voxels: Total voxels on mesh surface
-    """
-    if len(viewpoints) == 0:
-        return 0.0, 0, 0
-
-    # Create voxel grid from mesh
-    voxel_grid = o3d.geometry.VoxelGrid.create_from_triangle_mesh(mesh, voxel_size=voxel_size)
-
-    # Get all voxel centers
-    voxels = voxel_grid.get_voxels()
-    if len(voxels) == 0:
-        return 0.0, 0, 0
-
-    voxel_centers = np.array([voxel_grid.get_voxel_center_coordinate(v.grid_index) for v in voxels])
-    total_voxels = len(voxel_centers)
-
-    # Create mesh scene for raycasting
-    mesh_legacy = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
-    scene = o3d.t.geometry.RaycastingScene()
-    scene.add_triangles(mesh_legacy)
-
-    # Mark which voxels are covered by each viewpoint
-    covered_mask = np.zeros(total_voxels, dtype=bool)
-
-    fov_w, fov_h = camera_spec.get_fov_m()
-    wd = camera_spec.get_working_distance_m()
-
-    print(f"Computing voxel-based coverage ({total_voxels} voxels)...")
-
-    for i, vp in enumerate(viewpoints):
-        if (i + 1) % 10 == 0 or i == 0:
-            print(f"  Processing viewpoint {i+1}/{len(viewpoints)}...")
-
-        # Build local coordinate frame
-        z_axis = vp.normal  # Camera looks in this direction
-        helper = np.array([0, 0, 1]) if abs(z_axis[2]) < 0.9 else np.array([1, 0, 0])
-        x_axis = np.cross(helper, z_axis)
-        x_axis = x_axis / np.linalg.norm(x_axis)
-        y_axis = np.cross(z_axis, x_axis)
-
-        # Check which voxels are within FOV
-        voxel_to_camera = voxel_centers - vp.position
-
-        # Project onto camera axes
-        proj_z = np.dot(voxel_to_camera, z_axis)  # Distance along viewing direction
-        proj_x = np.dot(voxel_to_camera, x_axis)  # Horizontal offset
-        proj_y = np.dot(voxel_to_camera, y_axis)  # Vertical offset
-
-        # Check if within FOV cone
-        # At distance d, FOV extends ±fov_w/2 horizontally and ±fov_h/2 vertically
-        in_fov_mask = (
-            (proj_z > 0) &  # In front of camera
-            (proj_z < wd * 1.5) &  # Within reasonable distance
-            (np.abs(proj_x) < fov_w / 2 * (proj_z / wd)) &  # Within horizontal FOV
-            (np.abs(proj_y) < fov_h / 2 * (proj_z / wd))    # Within vertical FOV
-        )
-
-        if not np.any(in_fov_mask):
-            continue
-
-        # For voxels in FOV, check visibility via raycasting
-        visible_indices = np.where(in_fov_mask)[0]
-
-        for idx in visible_indices:
-            voxel_center = voxel_centers[idx]
-
-            # Ray from camera to voxel
-            ray_dir = voxel_center - vp.position
-            ray_dist = np.linalg.norm(ray_dir)
-            ray_dir = ray_dir / ray_dist
-
-            # Cast ray
-            rays = np.array([[vp.position[0], vp.position[1], vp.position[2],
-                            ray_dir[0], ray_dir[1], ray_dir[2]]], dtype=np.float32)
-            ans = scene.cast_rays(o3d.core.Tensor(rays, dtype=o3d.core.Dtype.Float32))
-
-            t_hit = ans['t_hit'].numpy()[0]
-
-            # If hit distance is close to voxel distance, voxel is visible
-            if np.isfinite(t_hit) and abs(t_hit - ray_dist) < voxel_size * 2:
-                covered_mask[idx] = True
-
-    covered_voxels = np.sum(covered_mask)
-    coverage_ratio = covered_voxels / total_voxels if total_voxels > 0 else 0.0
-
-    print(f"  Coverage: {covered_voxels}/{total_voxels} voxels ({coverage_ratio*100:.1f}%)")
-
-    return coverage_ratio, covered_voxels, total_voxels
-
-
 def compute_coverage_statistics(
     viewpoints: List[Viewpoint],
     mesh_surface_area: float,
@@ -936,19 +992,6 @@ def compute_coverage_statistics(
         'avg_depth_variation': np.mean([vp.depth_variation for vp in viewpoints]) if viewpoints else 0.0,
         'max_depth_variation': np.max([vp.depth_variation for vp in viewpoints]) if viewpoints else 0.0
     }
-
-    # Voxel-based coverage (no overlap)
-    if use_voxel_coverage and mesh is not None and camera_spec is not None:
-        voxel_ratio, covered_voxels, total_voxels = compute_voxel_based_coverage(
-            viewpoints, mesh, camera_spec
-        )
-        stats['voxel_coverage_ratio'] = voxel_ratio
-        stats['covered_voxels'] = covered_voxels
-        stats['total_voxels'] = total_voxels
-    else:
-        stats['voxel_coverage_ratio'] = None
-        stats['covered_voxels'] = 0
-        stats['total_voxels'] = 0
 
     return stats
 
@@ -1066,14 +1109,12 @@ def main():
                              '  0.5: Moderate adaptive overlap (10-25%%), balanced approach\n'
                              '  1.0: Aggressive adaptive overlap (10-40%%), maximum differentiation\n'
                              '  Higher values → more viewpoints in high-curvature regions (edges, corners)')
+    parser.add_argument('--use_poisson_disk', action='store_true',
+                        help='Use Poisson disk sampling for adaptive mode (maintains minimum distance between samples, blue noise distribution)')
     parser.add_argument('--check_dof', action='store_true',
                         help='Check depth of field constraints')
     parser.add_argument('--remove_invalid_dof', action='store_true',
                         help='Remove viewpoints that violate DOF constraints')
-    parser.add_argument('--voxel_coverage', action='store_true',
-                        help='Compute accurate voxel-based coverage (removes overlap)')
-    parser.add_argument('--voxel_size', type=float, default=2.0,
-                        help='Voxel size in mm for coverage calculation (default: 2.0)')
 
     # Viewpoint filtering for robot accessibility
     parser.add_argument('--filter_downward', action='store_true', default=True,
@@ -1103,9 +1144,7 @@ def main():
         overlap_ratio=args.overlap
     )
 
-    print("=" * 60)
-    print("FOV-based Viewpoint Sampling")
-    print("=" * 60)
+    print_section_header("FOV-BASED VIEWPOINT SAMPLING", width=60)
     print(camera_spec)
     print("=" * 60)
 
@@ -1120,16 +1159,15 @@ def main():
     )
 
     # Sample surface points
-    if args.adaptive_sampling:
-        surface_points, surface_normals = sample_points_adaptive(
-            mesh,
-            num_points,
-            curvature_weight=args.curvature_weight,
-            base_overlap_ratio=camera_spec.overlap_ratio
-        )
-    else:
-        surface_points, surface_normals = sample_points_uniform(mesh, num_points)
-
+    # Use curvature-stratified Poisson disk sampling
+    surface_points, surface_normals = sample_points_adaptive_poisson(
+        mesh,
+        num_points,
+        curvature_weight=args.curvature_weight,
+        base_overlap_ratio=camera_spec.overlap_ratio,
+        num_strata=3
+    )
+    
     # Compute viewpoints
     wd_meters = camera_spec.get_working_distance_m()
     print(f"\nComputing viewpoints...")
@@ -1143,42 +1181,29 @@ def main():
     num_tilt_adjusted = 0
 
     if args.filter_downward:
-        print(f"\n{'='*60}")
-        print("FILTERING DOWNWARD-FACING VIEWPOINTS")
-        print(f"{'='*60}")
+        print_section_header("FILTERING DOWNWARD-FACING VIEWPOINTS", width=60)
         viewpoints, num_downward_removed = filter_downward_facing_viewpoints(
             viewpoints, z_threshold=0.0
         )
 
     if args.apply_tilt:
-        print(f"\n{'='*60}")
-        print("APPLYING MINIMUM TILT ANGLE")
-        print(f"{'='*60}")
+        print_section_header("APPLYING MINIMUM TILT ANGLE", width=60)
         viewpoints, num_tilt_adjusted = apply_minimum_tilt_angle(
             viewpoints, camera_spec, min_tilt_deg=args.min_tilt_angle
-        )
-
-    # Check DOF constraints if requested
-    num_violated = 0
-    if args.check_dof:
-        viewpoints, num_violated = filter_viewpoints_by_dof(
-            viewpoints, mesh, camera_spec, remove_invalid=args.remove_invalid_dof
         )
 
     # Compute statistics
     stats = compute_coverage_statistics(
         viewpoints, surface_area,
-        mesh=mesh if args.voxel_coverage else None,
-        camera_spec=camera_spec if args.voxel_coverage else None,
-        use_voxel_coverage=args.voxel_coverage
+        mesh=None,
+        camera_spec=None,
+        use_voxel_coverage=False,
     )
 
     # Print results
-    print("\n" + "=" * 60)
-    print("RESULTS")
-    print("=" * 60)
-    print(f"Number of viewpoints: {stats['num_viewpoints']}")
-    print(f"Mesh surface area: {stats['mesh_area_m2'] * 1e6:.2f} mm²")
+    print_section_header("RESULTS", width=60)
+    print_key_value("Number of viewpoints", stats['num_viewpoints'])
+    print_key_value("Mesh surface area", f"{stats['mesh_area_m2'] * 1e6:.2f} mm²")
 
     # Print filtering statistics
     if args.filter_downward or args.apply_tilt:
@@ -1190,23 +1215,9 @@ def main():
             print(f"  Minimum tilt angle: {args.min_tilt_angle}°")
             print(f"  Z-positions adjusted to maintain coverage height")
 
-    # Print both coverage metrics if voxel coverage was computed
-    if stats['voxel_coverage_ratio'] is not None:
-        print(f"\nCoverage (voxel-based, no overlap):")
-        print(f"  Voxels: {stats['covered_voxels']}/{stats['total_voxels']}")
-        print(f"  Coverage ratio: {stats['voxel_coverage_ratio'] * 100:.1f}%")
-        print(f"\nCoverage (simple estimate, with overlap):")
-        print(f"  Total coverage: {stats['simple_coverage_m2'] * 1e6:.2f} mm²")
-        print(f"  Coverage ratio: {stats['simple_coverage_ratio'] * 100:.1f}%")
-    else:
-        print(f"Total coverage: {stats['simple_coverage_m2'] * 1e6:.2f} mm²")
-        print(f"Coverage ratio (with overlap): {stats['simple_coverage_ratio'] * 100:.1f}%")
+    print(f"Total coverage: {stats['simple_coverage_m2'] * 1e6:.2f} mm²")
+    print(f"Coverage ratio (with overlap): {stats['simple_coverage_ratio'] * 100:.1f}%")
 
-    if args.check_dof:
-        print(f"\nDOF constraints:")
-        print(f"  Violations: {num_violated}")
-        print(f"  Avg depth variation: {stats['avg_depth_variation'] * 1000:.3f} mm")
-        print(f"  Max depth variation: {stats['max_depth_variation'] * 1000:.3f} mm")
     print("=" * 60)
 
     # Determine save path
@@ -1259,25 +1270,23 @@ def main():
             recomputed_vp_pos = first_surface_pos + first_surface_normal * wd
             position_error = np.linalg.norm(recomputed_vp_pos - first_vp.position)
 
-        print(f"\n{'='*60}")
-        print("COORDINATE CONVERSION FOR HDF5 SAVE")
-        print(f"{'='*60}")
-        print(f"Converting viewpoint positions → surface positions")
-        print(f"  Working distance: {wd*1000:.1f} mm = {wd:.6f} m")
-        print(f"  Forward:  viewpoint_pos = surface_pos + surface_normal × WD")
-        print(f"  Inverse:  surface_pos = viewpoint_pos - surface_normal × WD")
+        print_section_header("COORDINATE CONVERSION FOR HDF5 SAVE", width=60)
+        print("Converting viewpoint positions → surface positions")
+        print_key_value("Working distance", f"{wd*1000:.1f} mm = {wd:.6f} m")
+        print("  Forward:  viewpoint_pos = surface_pos + surface_normal × WD")
+        print("  Inverse:  surface_pos = viewpoint_pos - surface_normal × WD")
         if len(viewpoints) > 0:
             print(f"\nVerification (first viewpoint):")
             print(f"  Original viewpoint pos:  {first_vp.position}")
             print(f"  Recovered surface pos:   {first_surface_pos}")
             print(f"  Recomputed viewpoint:    {recomputed_vp_pos}")
-            print(f"  Position error:          {position_error*1000:.6f} mm")
+            print_key_value("Position error", f"{position_error*1000:.6f} mm")
             if position_error > 1e-6:
-                print(f"  ⚠️  WARNING: Conversion error detected!")
+                print("  ⚠️  WARNING: Conversion error detected!")
             else:
-                print(f"  ✓ Conversion verified (error < 1 μm)")
+                print("  ✓ Conversion verified (error < 1 μm)")
         print(f"\nSaving {len(surface_positions)} surface positions to HDF5")
-        print(f"{'='*60}\n")
+        print()
 
         # Save using simplified viewpoints format
         save_viewpoints(

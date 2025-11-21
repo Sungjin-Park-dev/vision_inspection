@@ -1,0 +1,14 @@
+Collision Check Results for Pose 2
+======================================================================
+
+Glass position: [ 1.01868042  0.01013373 -0.13      ]
+Glass rotation: [ 0.99893548  0.          0.         -0.04612922]
+
+Waypoint collisions: 0
+Segment collisions: 0
+Total collisions: 0
+Reconfigurations: 18
+Trajectory modified: True
+Replanning attempts: 0
+Check time: 12.85s
+Replanning time: 8.63s

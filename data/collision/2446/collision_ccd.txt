@@ -1,0 +1,16 @@
+=== CCD Collision Report @ 2025-11-17 07:30:13 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/scripts/ccd/../../data/trajectory/2446/joint_trajectory_dp.csv
+Robot URDF: /isaac-sim/curobo/vision_inspection/scripts/ccd/../../ur_description/ur20.urdf
+Robot config: /isaac-sim/curobo/vision_inspection/scripts/ccd/../../ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/scripts/ccd/../../data/object/glass_zup.obj
+Collision margin: 0
+CCD enabled: true (InterpMotion with Conservative Advancement)
+
+Total waypoints: 2446
+Total segments: 2445
+Total CCD queries: 234720
+Collision segments: 0
+Collision-free segments: 2445
+Collision rate (%): 0.00
+
+Collision segment indices: 

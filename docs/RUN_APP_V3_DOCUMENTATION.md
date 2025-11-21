@@ -346,6 +346,39 @@ while simulation_app.is_running():
 
 ---
 
+## 🚀 Integrated Pipeline (Scripts Only)
+
+For headless benchmarking or experiment automation, the new `scripts/integrated_pipeline.py` runs Steps 1‑4 (viewpoint loading, IK, TSP/DP, collision + replanning) inside a single Python process—no Isaac Sim session required.
+
+**Key benefits**
+- Reuses the CuRobo IK + MotionGen objects in memory (no repeated GPU initialization)
+- Eliminates intermediate HDF5/CSV files between stages
+- Same reconfiguration/collision logic as `curobo_check.py`, so CLI and experiments use one implementation
+
+**Usage**
+```bash
+python3 scripts/integrated_pipeline.py \
+  --viewpoints data/viewpoint/1158/viewpoints.h5 \
+  --mesh data/object/glass.obj \
+  --robot-config ur20_safe.yml
+```
+
+- `--viewpoints` (required) points to the `viewpoints.h5` produced by `mesh_to_viewpoints.py`.
+- `--mesh`, `--robot-config`, `--robot-urdf` are optional overrides; defaults come from `common.config`.
+- Pass `--quiet` to suppress verbose timing logs if embedding inside automation.
+
+The script prints per-step timing plus collision / replan statistics and returns a `PipelineResults` object when imported programmatically:
+```python
+from scripts.integrated_pipeline import PipelineConfig, IntegratedVisionInspectionPipeline
+
+cfg = PipelineConfig.from_common_config()
+cfg.viewpoints_file = "data/viewpoint/1158/viewpoints.h5"
+pipeline = IntegratedVisionInspectionPipeline(cfg, verbose=False)
+results = pipeline.run_pipeline()
+```
+
+---
+
 ## 📊 Coordinate Systems
 
 ### Open3D vs Isaac Sim

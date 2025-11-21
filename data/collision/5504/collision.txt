@@ -116,3 +116,272 @@ Timing (wall-clock):
   Reconfiguration check:  0.010 s
   CuRobo replanning:      0.000 s
   Total runtime:          16.937 s
+
+=== Collision Report @ 2025-11-17 07:37:51 ===
+Trajectory: data/trajectory/5504/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/glass.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 40121
+
+Total waypoints: 5504
+Total configurations checked: 45666
+Collisions at waypoints: 0
+Segment collisions (raw count): 0
+Total collisions: 0
+Collision-free configurations: 45666
+Collision rate (%): 0.00
+
+Collision waypoint indices: None
+Collision segments (unique pairs): None
+
+Collisions by link: None
+
+Replanning Summary:
+  Attempted: True
+  Success: False
+  Total segments requested: None
+    - Collision segments: None
+  Segments replanned: None
+  Failed segments: None
+  Collision-free CSV: data/trajectory/5504/collision_free_trajectory.csv
+
+Occurrence Counts:
+  Collisions: 0
+
+Timing (wall-clock):
+  Collision check:         7.197 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          13.801 s
+
+=== Collision Report @ 2025-11-17 08:09:47 ===
+Trajectory: data/trajectory/5504/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/glass.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 40121
+
+Total waypoints: 5504
+Total configurations checked: 45666
+Collisions at waypoints: 0
+Segment collisions (raw count): 0
+Total collisions: 0
+Collision-free configurations: 45666
+Collision rate (%): 0.00
+
+Collision waypoint indices: None
+Collision segments (unique pairs): None
+
+Collisions by link: None
+
+Replanning Summary:
+  Attempted: True
+  Success: False
+  Total segments requested: None
+    - Collision segments: None
+  Segments replanned: None
+  Failed segments: None
+  Collision-free CSV: data/trajectory/5504/collision_free_trajectory.csv
+
+Occurrence Counts:
+  Collisions: 0
+
+Timing (wall-clock):
+  Collision check:         7.002 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          13.323 s
+
+=== Collision Report @ 2025-11-17 12:04:44 ===
+Trajectory: data/trajectory/5504/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 40120
+
+Total waypoints: 5504
+Total configurations checked: 45665
+Collisions at waypoints: 0
+Segment collisions (raw count): 0
+Total collisions: 0
+Collision-free configurations: 45665
+Collision rate (%): 0.00
+
+Collision waypoint indices: None
+Collision segments (unique pairs): None
+
+Collisions by link: None
+
+Replanning Summary:
+  Attempted: True
+  Success: False
+  Total segments requested: None
+    - Collision segments: None
+  Segments replanned: None
+  Failed segments: None
+  Collision-free CSV: data/trajectory/5504/collision_free_trajectory.csv
+
+Occurrence Counts:
+  Collisions: 0
+
+Timing (wall-clock):
+  Collision check:         9.432 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          16.184 s
+
+=== Collision Report @ 2025-11-17 12:40:32 ===
+Trajectory: data/trajectory/5504/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 40107
+
+Total waypoints: 5504
+Total configurations checked: 45611
+Collisions at waypoints: 0
+Segment collisions (raw count): 675
+Total collisions: 675
+Collision-free configurations: 44936
+Collision rate (%): 1.48
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 1671->1672, 2138->2139, 2178->2179, 2187->2188, 2723->2724
+
+Collisions by link: None
+
+Occurrence Counts:
+  Collisions: 675
+
+Timing (wall-clock):
+  Collision check:         9.378 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          9.697 s
+
+=== Collision Report @ 2025-11-17 14:48:11 ===
+Trajectory: data/trajectory/5504/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 40107
+
+Total waypoints: 5504
+Total configurations checked: 45611
+Collisions at waypoints: 0
+Segment collisions (raw count): 675
+Total collisions: 675
+Collision-free configurations: 44936
+Collision rate (%): 1.48
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 1671->1672, 2138->2139, 2178->2179, 2187->2188, 2723->2724
+
+Collisions by link: None
+
+Occurrence Counts:
+  Collisions: 675
+
+Timing (wall-clock):
+  Collision check:         9.293 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          9.615 s
+
+=== Collision Report @ 2025-11-17 15:31:27 ===
+Trajectory: data/trajectory/5504/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 40290
+
+Total waypoints: 5504
+Total configurations checked: 46148
+Collisions at waypoints: 0
+Segment collisions (raw count): 0
+Total collisions: 0
+Collision-free configurations: 46148
+Collision rate (%): 0.00
+
+Collision waypoint indices: None
+Collision segments (unique pairs): None
+
+Collisions by link: None
+
+Replanning Summary:
+  Attempted: True
+  Success: False
+  Total segments requested: None
+    - Collision segments: None
+  Segments replanned: None
+  Failed segments: None
+  Collision-free CSV: data/trajectory/5504/collision_free_trajectory.csv
+
+Occurrence Counts:
+  Collisions: 0
+
+Timing (wall-clock):
+  Collision check:         9.138 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          16.757 s
+
+=== Collision Report @ 2025-11-17 15:33:45 ===
+Trajectory: data/trajectory/5504/joint_trajectory_dp.csv
+Robot URDF: ur_description/ur20.urdf
+Robot config: ur_description/ur20_safe.yml
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/phone.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation steps (default): 10
+Interpolation mode: adaptive
+Interpolated configurations: 40286
+
+Total waypoints: 5504
+Total configurations checked: 46145
+Collisions at waypoints: 0
+Segment collisions (raw count): 0
+Total collisions: 0
+Collision-free configurations: 46145
+Collision rate (%): 0.00
+
+Collision waypoint indices: None
+Collision segments (unique pairs): None
+
+Collisions by link: None
+
+Replanning Summary:
+  Attempted: True
+  Success: False
+  Total segments requested: None
+    - Collision segments: None
+  Segments replanned: None
+  Failed segments: None
+  Collision-free CSV: data/trajectory/5504/collision_free_trajectory.csv
+
+Occurrence Counts:
+  Collisions: 0
+
+Timing (wall-clock):
+  Collision check:         9.224 s
+  CuRobo replanning:      0.000 s
+  Total runtime:          16.876 s
