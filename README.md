@@ -29,6 +29,7 @@ omni_python scripts/compute_ik_solutions.py \
 # 3. IK Solutions → Trajectory
 omni_python scripts/fk_gtsp_gpu_claude2.py \
     --h5 data/ik/675/ik_solutions.h5 \
+    --knn 5 \
     --csv_out data/trajectory/675/dh_5.csv
 
 # 4. Trajectory → Collision-Free
@@ -76,7 +77,6 @@ omni_python scripts/compute_ik_solutions.py \
 
 **주요 옵션**:
 - `--robot ur20.yml`: 로봇 설정 파일
-- `--num_seeds 20`: IK 시드 개수
 
 **출력**: `data/ik/{N}/ik_solutions.h5` - 각 뷰포인트의 관절 각도 해
 
@@ -238,32 +238,6 @@ save_trajectory_csv(trajectory, "path/to/output.csv", joint_names=joint_names)
 
 **메쉬 파일**: Z-up, 단위는 미터(m)
 
----
-
-## 문제 해결
-
-**1. 충돌 체크 오류**
-- `config.py`의 `COLLISION_MARGIN` 조정
-- 메쉬 스케일 확인 (미터 단위)
-- 장애물 위치 확인
-
-**2. IK 해가 없음**
-- `IK_NUM_SEEDS` 증가
-- 뷰포인트가 작업 공간 내에 있는지 확인
-- 객체 위치 확인
-
-**3. 경로에 급격한 재구성**
-- `RECONFIG_*_THRESHOLD` 파라미터 조정
-- `--replan` 플래그 사용
-- `REPLAN_TIMEOUT` 증가
-
-**4. 메쉬 좌표 오류**
-- 메쉬가 미터 단위인지 확인 (밀리미터 아님)
-- Z-up 좌표계 확인
-- mesh_to_viewpoints.py 출력 경고 확인
-
----
-
 ## 리팩토링 내역 (2024-11)
 
 **생성된 공통 유틸리티**:
@@ -279,12 +253,6 @@ save_trajectory_csv(trajectory, "path/to/output.csv", joint_names=joint_names)
 
 **제외된 스크립트**:
 - `fk_gtsp_gpu_claude2.py` - 안정성 유지를 위해 제외
-
-**효과**:
-- 중복 코드 400+ 줄 제거
-- 일관된 CLI 출력
-- 유지보수 용이
-
 ---
 
 ## 추가 문서

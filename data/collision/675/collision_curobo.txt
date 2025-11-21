@@ -2626,3 +2626,43 @@ Timing:
   Collision checking: 0.016 s
   Replanning:         1.320 s
   Total:              48941.451 s
+
+=== Collision Report (CuRobo) @ 2025-11-21 13:39:59 ===
+Trajectory: data/trajectory/675/dh_5.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/glass.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation mode: adaptive
+Interpolated configurations: 5888
+
+Total waypoints: 675
+Total configurations checked: 6563
+Collisions at waypoints: 0
+Segment collisions (raw count): 552
+Total collisions: 552
+Collision-free configurations: 6011
+Collision rate (%): 8.26
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 255->256, 523->524, 620->621, 631->632
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 4
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 255, 523, 620, 631
+
+Segment Statistics:
+  Collision segments: 4
+    Segments: 255, 523, 620, 631
+  Replanning segments: 4
+    Segments: 255, 523, 620, 631
+
+Timing:
+  Collision checking: 0.018 s
+  Replanning:         1.349 s
+  Total:              49063.889 s
