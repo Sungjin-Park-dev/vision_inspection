@@ -29,16 +29,15 @@ omni_python scripts/compute_ik_solutions.py \
 # 3. IK Solutions → Trajectory
 omni_python scripts/fk_gtsp_gpu_claude2.py \
     --h5 data/ik/675/ik_solutions.h5 \
-    --knn 5 \
-    --csv_out data/trajectory/675/dh_5.csv
+    --csv_out data/trajectory/675/gtsp.csv
 
 # 4. Trajectory → Collision-Free
 omni_python scripts/curobo_check.py \
-    --trajectory data/trajectory/675/dh_5.csv
+    --trajectory data/trajectory/675/gtsp.csv
 
 # 5. Simulation
 omni_python scripts/simulate_trajectory.py \
-    --trajectory data/trajectory/675/dh_5_collision_free.csv
+    --trajectory data/trajectory/675/gtsp_collision_free.csv
 ```
 
 ---
@@ -182,14 +181,10 @@ TABLE_POSITION = np.array([1.0, 0.0, -0.425])   # 테이블 위치
 TABLE_DIMENSIONS = np.array([0.6, 1.0, 0.5])    # 테이블 크기
 ```
 
-**알고리즘 파라미터**:
+**보간 간격**:
 ```python
-IK_NUM_SEEDS = 20                    # IK 시드 개수
-COLLISION_ADAPTIVE_INTERP = True     # 적응형 보간
-REPLAN_ENABLED = True                # 재계획 활성화
-REPLAN_TIMEOUT = 8.0                 # 재계획 타임아웃
+COLLISION_ADAPTIVE_MAX_JOINT_STEP_DEG = 1.0 # 보간 간격
 ```
-
 ---
 
 ## 공통 유틸리티
