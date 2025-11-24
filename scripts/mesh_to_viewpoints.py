@@ -36,7 +36,7 @@ from common.cli_utils import print_section_header, print_key_value
 from common.coordinate_utils import normalize_vectors, offset_points_along_normals
 
 # Import TSP utilities for saving results
-from deprecated_scripts.tsp_utils import save_viewpoints
+from common.tsp_utils import save_viewpoints
 
 
 @dataclass
