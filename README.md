@@ -40,7 +40,7 @@ data/glass/trajectory/500/gtsp_final.csv
 
 ---
 
-## 🎓 Jupyter Notebook (교육/데모용) - 추천!
+## 🎓 Jupyter Notebook (교육/데모용)
 
 **새로운 방법**: 전체 파이프라인을 하나의 노트북에서 단계별로 실행
 
@@ -68,8 +68,6 @@ jupyter notebook vision_inspection_pipeline.ipynb
 ---
 
 ## ⚙️ 개별 스크립트 실행 (프로덕션용)
-
-### 새로운 방법 (물체 중심 구조) - 추천!
 
 **간단한 사용법**: `--object_name`과 `--num_viewpoints`만 지정하면 경로 자동 생성
 
