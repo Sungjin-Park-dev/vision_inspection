@@ -58,7 +58,7 @@ parser.add_argument(
 parser.add_argument(
     "--robot",
     type=str,
-    default="ur20.yml",
+    default="ur20_safe.yml",
     help="Robot configuration file (default: ur20.yml)"
 )
 parser.add_argument(
@@ -96,6 +96,11 @@ parser.add_argument(
     type=int,
     default=100,
     help="Maximum interpolation steps for adaptive mode (default: 100)"
+)
+parser.add_argument(
+    "--debug",
+    action="store_true",
+    help="Enable debug mode: visualize target waypoint positions as green points"
 )
 args = parser.parse_args()
 
@@ -146,8 +151,8 @@ from common import config
 from common.cli_utils import print_section_header, print_key_value, print_success
 from common.interpolation_utils import generate_interpolated_path
 from common.world_setup import setup_collision_world
-from common.trajectory_io import load_trajectory_csv
-from utilss.simulation_helper import add_extensions, add_robot_to_scene
+from common.data_io import load_trajectory_csv
+from common.simulation_helper import add_extensions, add_robot_to_scene
 
 
 # ============================================================================
@@ -160,6 +165,7 @@ class SimulationConfig:
     robot_config_file: str
     headless_mode: str
     visualize_spheres: bool
+    debug: bool
 
     # Interpolation parameters
     interpolation_steps: int  # If set, overrides adaptive mode
@@ -189,6 +195,7 @@ class SimulationConfig:
             robot_config_file=args.robot,
             headless_mode=args.headless,
             visualize_spheres=args.visualize_spheres,
+            debug=args.debug,
             interpolation_steps=args.interpolation_steps,
             steps_per_radian=args.steps_per_radian,
             min_steps=args.min_steps,
@@ -209,11 +216,13 @@ class WorldState:
 # ============================================================================
 # File I/O
 # ============================================================================
-def load_joint_trajectory_csv_for_sim(csv_path: str) -> List[np.ndarray]:
-    """Load joint trajectory from CSV file
+def load_joint_trajectory_csv_for_sim(csv_path: str) -> tuple[List[np.ndarray], List[np.ndarray]]:
+    """Load joint trajectory and target poses from CSV file
 
     Returns:
-        List of joint configurations (each is 6-element array)
+        Tuple of (joint_targets, target_positions)
+        - joint_targets: List of joint configurations (each is 6-element array)
+        - target_positions: List of target positions (each is 3-element array [x, y, z])
     """
     print_section_header("LOADING JOINT TRAJECTORY", width=60)
     print_key_value("Input file", csv_path)
@@ -224,10 +233,27 @@ def load_joint_trajectory_csv_for_sim(csv_path: str) -> List[np.ndarray]:
     # Convert to list of arrays
     joint_targets = [np.array(config, dtype=np.float64) for config in trajectory]
 
+    # Load target poses from CSV
+    target_positions = []
+    try:
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Extract target position (POS_X, POS_Y, POS_Z)
+                pos_x = float(row['target-POS_X'])
+                pos_y = float(row['target-POS_Y'])
+                pos_z = float(row['target-POS_Z'])
+                target_positions.append(np.array([pos_x, pos_y, pos_z]))
+        print_key_value("Loaded target poses", len(target_positions))
+    except (KeyError, ValueError) as e:
+        print(f"  Warning: Could not load target poses from CSV: {e}")
+        print("  → Will compute from FK instead")
+        target_positions = None
+
     print_key_value("Loaded waypoints", len(joint_targets))
     print()
 
-    return joint_targets
+    return joint_targets, target_positions
 
 
 def compute_adaptive_steps(
@@ -481,6 +507,65 @@ def initialize_simulation(cfg: SimulationConfig) -> WorldState:
 
 
 # ============================================================================
+# Debug Visualization
+# ============================================================================
+def visualize_target_positions(
+    target_positions: List[np.ndarray],
+    draw: _debug_draw,
+    joint_targets: List[np.ndarray] = None,
+    ik_solver: IKSolver = None
+):
+    """Visualize target waypoint positions as green points
+
+    Args:
+        target_positions: List of target positions (from CSV), or None to compute from FK
+        draw: Debug draw interface
+        joint_targets: List of joint configurations (used if target_positions is None)
+        ik_solver: IK solver with kinematics (used if target_positions is None)
+    """
+    print_section_header("DEBUG: VISUALIZING TARGET POSITIONS", width=60)
+
+    # If target_positions not provided, compute from FK
+    if target_positions is None:
+        if joint_targets is None or ik_solver is None:
+            print("Error: Cannot visualize - no target positions or FK solver provided")
+            return
+
+        print("Computing target positions from forward kinematics...")
+        tensor_args = TensorDeviceType()
+        target_positions = []
+
+        for joint_config in joint_targets:
+            # Convert to tensor (batch size 1)
+            q_tensor = tensor_args.to_device([joint_config])
+
+            # Compute forward kinematics
+            ee_pose = ik_solver.fk(q_tensor)
+            ee_position = ee_pose.position[0].cpu().numpy()
+
+            target_positions.append(ee_position)
+    else:
+        print("Using target positions from CSV file...")
+
+    target_positions = np.array(target_positions)
+
+    # Draw green points at target positions
+    point_sizes = [10.0] * len(target_positions)
+    colors = [(0.0, 1.0, 0.0, 1.0)] * len(target_positions)  # Green with alpha
+
+    draw.draw_points(
+        target_positions.tolist(),
+        colors,
+        point_sizes
+    )
+
+    print_key_value("Target waypoints visualized", len(target_positions))
+    print_key_value("Color", "Green")
+    print_key_value("Point size", 10.0)
+    print()
+
+
+# ============================================================================
 # Simulation Loop
 # ============================================================================
 def get_active_joint_positions(robot, idx_list: List[int]) -> np.ndarray:
@@ -573,7 +658,7 @@ def run_simulation(
                 for si, s in enumerate(sph_list[0]):
                     spheres[si].set_world_pose(position=np.ravel(s.position))
                     spheres[si].set_radius(float(s.radius))
-
+                    
         # Execute trajectory waypoints directly
         # No interpolation - trajectory already contains all collision-checked configurations
         if target_queue:
@@ -589,7 +674,7 @@ def run_simulation(
             waypoint_counter += 1
 
         # Check if trajectory complete
-        if not target_queue:
+        if not target_queue and not cfg.debug:
             end_time = time.time()
             elapsed_time = end_time - start_time
 
@@ -612,13 +697,26 @@ def main():
     print_section_header("SIMULATE TRAJECTORY", width=60)
     print_key_value("Trajectory", cfg.trajectory_path)
     print_key_value("Robot config", cfg.robot_config_file)
+    print_key_value("Debug mode", "Enabled" if cfg.debug else "Disabled")
+    if cfg.debug:
+        print("  → Target waypoint positions will be visualized as green points")
     print()
 
-    # Load joint trajectory
-    joint_targets = load_joint_trajectory_csv_for_sim(cfg.trajectory_path)
+    # Load joint trajectory and target poses
+    joint_targets, target_positions = load_joint_trajectory_csv_for_sim(cfg.trajectory_path)
 
     # Initialize simulation
     world_state = initialize_simulation(cfg)
+
+    # Debug visualization: draw target positions
+    if cfg.debug:
+        draw = _debug_draw.acquire_debug_draw_interface()
+        visualize_target_positions(
+            target_positions=target_positions,
+            draw=draw,
+            joint_targets=joint_targets,
+            ik_solver=world_state.ik_solver
+        )
 
     # Run simulation
     run_simulation(world_state, joint_targets, cfg)

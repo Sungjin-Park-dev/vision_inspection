@@ -69,23 +69,6 @@ def get_camera_working_distance_m() -> float:
     return CAMERA_WORKING_DISTANCE_MM / 1000.0
 
 
-def get_camera_fov_m() -> tuple:
-    """Get camera FOV in meters (width, height)"""
-    return CAMERA_FOV_WIDTH_MM / 1000.0, CAMERA_FOV_HEIGHT_MM / 1000.0
-
-
-def get_camera_dof_m() -> float:
-    """Get camera depth of field in meters"""
-    return CAMERA_DEPTH_OF_FIELD_MM / 1000.0
-
-
-def get_effective_coverage_mm() -> tuple:
-    """Get effective coverage per viewpoint considering overlap (width, height in mm)"""
-    effective_width = CAMERA_FOV_WIDTH_MM * (1.0 - CAMERA_OVERLAP_RATIO)
-    effective_height = CAMERA_FOV_HEIGHT_MM * (1.0 - CAMERA_OVERLAP_RATIO)
-    return effective_width, effective_height
-
-
 # ============================================================================
 # World Configuration (Isaac Sim coordinates, meters)
 # ============================================================================
@@ -144,6 +127,87 @@ DEFAULT_ROBOT_CONFIG_YAML = "ur_description/ur20_safe.yml"  # For collision sphe
 
 # Mesh base path for URDF collision meshes
 MESH_BASE_PATH = "ur_description"
+
+
+# ============================================================================
+# Object-Based Data Path Helpers
+# ============================================================================
+
+def get_mesh_path(object_name: str, filename: str = "target.obj") -> Path:
+    """
+    Get path to object mesh file
+
+    Args:
+        object_name: Name of the object (e.g., "glass", "phone")
+        filename: Mesh filename (default: "target.obj")
+
+    Returns:
+        Path to mesh file: data/{object_name}/mesh/{filename}
+
+    Example:
+        >>> get_mesh_path("glass")
+        PosixPath('data/glass/mesh/target.obj')
+    """
+    return DATA_ROOT / object_name / "mesh" / filename
+
+
+def get_viewpoint_path(object_name: str, num_viewpoints: int, filename: str = "viewpoints.h5") -> Path:
+    """
+    Get path to viewpoints file
+
+    Args:
+        object_name: Name of the object (e.g., "glass")
+        num_viewpoints: Number of viewpoints
+        filename: Filename (default: "viewpoints.h5")
+
+    Returns:
+        Path to viewpoints: data/{object_name}/viewpoint/{num_viewpoints}/{filename}
+
+    Example:
+        >>> get_viewpoint_path("glass", 500)
+        PosixPath('data/glass/viewpoint/500/viewpoints.h5')
+    """
+    return DATA_ROOT / object_name / "viewpoint" / str(num_viewpoints) / filename
+
+
+def get_ik_path(object_name: str, num_viewpoints: int, filename: str = "ik_solutions.h5") -> Path:
+    """
+    Get path to IK solutions file
+
+    Args:
+        object_name: Name of the object (e.g., "glass")
+        num_viewpoints: Number of viewpoints
+        filename: Filename (default: "ik_solutions.h5")
+
+    Returns:
+        Path to IK solutions: data/{object_name}/ik/{num_viewpoints}/{filename}
+
+    Example:
+        >>> get_ik_path("glass", 500)
+        PosixPath('data/glass/ik/500/ik_solutions.h5')
+    """
+    return DATA_ROOT / object_name / "ik" / str(num_viewpoints) / filename
+
+
+def get_trajectory_path(object_name: str, num_viewpoints: int, filename: str = "gtsp.csv") -> Path:
+    """
+    Get path to trajectory file
+
+    Args:
+        object_name: Name of the object (e.g., "glass")
+        num_viewpoints: Number of viewpoints
+        filename: Filename (default: "gtsp.csv", can also be "gtsp_final.csv")
+
+    Returns:
+        Path to trajectory: data/{object_name}/trajectory/{num_viewpoints}/{filename}
+
+    Example:
+        >>> get_trajectory_path("glass", 500)
+        PosixPath('data/glass/trajectory/500/gtsp.csv')
+        >>> get_trajectory_path("glass", 500, "gtsp_final.csv")
+        PosixPath('data/glass/trajectory/500/gtsp_final.csv')
+    """
+    return DATA_ROOT / object_name / "trajectory" / str(num_viewpoints) / filename
 
 
 # ============================================================================
@@ -249,67 +313,3 @@ HDF5 file storage:
 """
 
 
-# ============================================================================
-# Configuration Export
-# ============================================================================
-
-def get_camera_spec_dict() -> dict:
-    """
-    Get camera specification as dictionary for HDF5 storage
-
-    Returns:
-        Dictionary with all camera specifications
-    """
-    return {
-        'sensor_width_px': CAMERA_SENSOR_WIDTH_PX,
-        'sensor_height_px': CAMERA_SENSOR_HEIGHT_PX,
-        'pixel_size_um': CAMERA_PIXEL_SIZE_UM,
-        'fov_width_mm': CAMERA_FOV_WIDTH_MM,
-        'fov_height_mm': CAMERA_FOV_HEIGHT_MM,
-        'working_distance_mm': CAMERA_WORKING_DISTANCE_MM,
-        'depth_of_field_mm': CAMERA_DEPTH_OF_FIELD_MM,
-        'overlap_ratio': CAMERA_OVERLAP_RATIO,
-    }
-
-
-def print_config_summary():
-    """Print configuration summary for debugging"""
-    print("=" * 70)
-    print("VISION INSPECTION CONFIGURATION")
-    print("=" * 70)
-    print("\nCamera Specifications:")
-    print(f"  Sensor: {CAMERA_SENSOR_WIDTH_PX} x {CAMERA_SENSOR_HEIGHT_PX} px")
-    print(f"  Pixel size: {CAMERA_PIXEL_SIZE_UM} μm")
-    print(f"  FOV: {CAMERA_FOV_WIDTH_MM} x {CAMERA_FOV_HEIGHT_MM} mm")
-    print(f"  Working Distance: {CAMERA_WORKING_DISTANCE_MM} mm")
-    print(f"  Depth of Field: {CAMERA_DEPTH_OF_FIELD_MM} mm")
-    print(f"  Overlap: {CAMERA_OVERLAP_RATIO * 100:.1f}%")
-    eff_w, eff_h = get_effective_coverage_mm()
-    print(f"  Effective coverage: {eff_w:.2f} x {eff_h:.2f} mm")
-
-    print("\nWorld Configuration:")
-    print(f"  Glass position: {GLASS_POSITION}")
-    print(f"  Glass rotation (quat w,x,y,z): {GLASS_ROTATION}")
-    print(f"  Table position: {TABLE_POSITION}")
-    print(f"  Table dimensions: {TABLE_DIMENSIONS}")
-    print(f"  Wall position: {WALL_POSITION}")
-    print(f"  Wall dimensions: {WALL_DIMENSIONS}")
-    print(f"  Workbench position: {WORKBENCH_POSITION}")
-    print(f"  Workbench dimensions: {WORKBENCH_DIMENSIONS}")
-    print(f"  Robot mount position: {ROBOT_MOUNT_POSITION}")
-    print(f"  Robot mount dimensions: {ROBOT_MOUNT_DIMENSIONS}")
-
-    print("\nAlgorithm Parameters:")
-    print(f"  Interpolation steps: {INTERPOLATION_STEPS}")
-    print(f"  IK seeds: {IK_NUM_SEEDS}")
-    print(f"  Joint weights: {JOINT_WEIGHTS}")
-
-    print("\nFile Paths:")
-    print(f"  Default mesh: {DEFAULT_MESH_FILE}")
-    print(f"  Robot URDF: {DEFAULT_ROBOT_URDF}")
-    print(f"  Robot config: {DEFAULT_ROBOT_CONFIG}")
-    print("=" * 70)
-
-
-if __name__ == "__main__":
-    print_config_summary()

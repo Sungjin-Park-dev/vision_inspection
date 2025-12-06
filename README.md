@@ -10,35 +10,101 @@ mesh → viewpoints → IK solutions → trajectory → collision-free → simul
  .obj      .h5          .h5          .csv          .csv
 ```
 
+## 📁 데이터 디렉토리 구조
+
+```
+data/
+  {object_name}/          # 예: glass, phone, microwave
+    mesh/
+      target.obj          # 물체 메쉬 파일 (통일된 이름)
+    viewpoint/
+      {num_viewpoints}/   # 예: 500, 1000
+        viewpoints.h5
+    ik/
+      {num_viewpoints}/
+        ik_solutions.h5
+    trajectory/
+      {num_viewpoints}/
+        gtsp.csv          # 초기 trajectory
+        gtsp_final.csv    # collision-free trajectory
+```
+
+**예시**:
+```
+data/glass/mesh/target.obj
+data/glass/viewpoint/500/viewpoints.h5
+data/glass/ik/500/ik_solutions.h5
+data/glass/trajectory/500/gtsp.csv
+data/glass/trajectory/500/gtsp_final.csv
+```
+
 ---
 
-## 빠른 시작
+## 🎓 Jupyter Notebook (교육/데모용) - 추천!
 
-전체 파이프라인 실행 예제:
+**새로운 방법**: 전체 파이프라인을 하나의 노트북에서 단계별로 실행
+
+```bash
+# Jupyter 실행
+jupyter notebook vision_inspection_pipeline.ipynb
+```
+
+**장점**:
+- ✅ 단계별 실행 및 시각화
+- ✅ 파라미터 쉽게 조정 가능
+- ✅ 중간 결과 확인 및 저장
+- ✅ 교육용 설명 포함
+
+**포함된 섹션**:
+1. **Section 0**: 환경 설정
+2. **Section 1**: Mesh → Viewpoints (완전 구현)
+3. **Section 2-4**: IK, Trajectory, Collision (템플릿 제공)
+4. **Section 5**: 결과 시각화
+
+노트북은 기존 `scripts/` 및 `common/` 모듈을 임포트하여 사용하므로 코드 중복이 없습니다.
+
+**진행 상황**: `PROGRESS.md` 참고
+
+---
+
+## ⚙️ 개별 스크립트 실행 (프로덕션용)
+
+### 새로운 방법 (물체 중심 구조) - 추천!
+
+**간단한 사용법**: `--object_name`과 `--num_viewpoints`만 지정하면 경로 자동 생성
 
 ```bash
 # 1. Mesh → Viewpoints
 omni_python scripts/mesh_to_viewpoints.py \
-    --mesh_file data/object/glass.obj \
+    --object_name glass \
     --visualize
 
 # 2. Viewpoints → IK Solutions
 omni_python scripts/compute_ik_solutions.py \
-    --viewpoints data/viewpoint/675/viewpoints.h5
+    --object_name glass \
+    --num_viewpoints 500
 
 # 3. IK Solutions → Trajectory
 omni_python scripts/fk_gtsp_gpu_claude2.py \
-    --h5 data/ik/675/ik_solutions.h5 \
-    --csv_out data/trajectory/675/gtsp.csv
+    --object_name glass \
+    --num_viewpoints 500
 
 # 4. Trajectory → Collision-Free
-omni_python scripts/curobo_check.py \
-    --trajectory data/trajectory/675/gtsp.csv
+omni_python scripts/check_collision.py \
+    --object_name glass \
+    --num_viewpoints 500
 
 # 5. Simulation
 omni_python scripts/simulate_trajectory.py \
-    --trajectory data/trajectory/675/gtsp_collision_free.csv
+    --trajectory data/glass/trajectory/500/gtsp_final.csv
 ```
+
+모든 중간 파일은 자동으로 다음 경로에 저장됩니다:
+- Mesh: `data/glass/mesh/target.obj` (사전 준비 필요)
+- Viewpoints: `data/glass/viewpoint/500/viewpoints.h5`
+- IK: `data/glass/ik/500/ik_solutions.h5`
+- Trajectory: `data/glass/trajectory/500/gtsp.csv`
+- Final: `data/glass/trajectory/500/gtsp_final.csv`
 
 ---
 
@@ -50,15 +116,18 @@ omni_python scripts/simulate_trajectory.py \
 
 **실행**:
 ```bash
-omni_python scripts/mesh_to_viewpoints.py --mesh_file data/object/microwave.obj [OPTIONS]
+omni_python scripts/mesh_to_viewpoints.py \
+    --object_name glass \
+    --visualize
 ```
 
 **주요 옵션**:
+- `--object_name`: 물체 이름 (자동 경로 생성)
 - `--curvature_weight 0.5`: 곡률 영향 (0.0~1.0)
-- `--min_tilt_angle 30.0`: 최소 기울기 각도 (도)
 - `--visualize`: Open3D 시각화
 
-**출력**: `data/viewpoint/{N}/viewpoints.h5` - 표면 위치 + 법선 벡터
+**출력**:
+- `data/{object_name}/viewpoint/{N}/viewpoints.h5`
 
 ---
 
@@ -69,15 +138,17 @@ omni_python scripts/mesh_to_viewpoints.py --mesh_file data/object/microwave.obj 
 **실행**:
 ```bash
 omni_python scripts/compute_ik_solutions.py \
-    --viewpoints data/viewpoint/100/viewpoints.h5 \
-    --output data/ik/100/ik_solutions.h5 \
-    --mesh_file data/object/microwave.obj [OPTIONS]
+    --object_name glass \
+    --num_viewpoints 500
 ```
 
 **주요 옵션**:
+- `--object_name`: 물체 이름 (자동 경로 생성)
+- `--num_viewpoints`: 뷰포인트 개수
 - `--robot ur20.yml`: 로봇 설정 파일
 
-**출력**: `data/ik/{N}/ik_solutions.h5` - 각 뷰포인트의 관절 각도 해
+**출력**:
+- `data/{object_name}/ik/{N}/ik_solutions.h5`
 
 **특징**:
 - GPU 가속 (CuRobo)
@@ -93,39 +164,44 @@ omni_python scripts/compute_ik_solutions.py \
 **실행**:
 ```bash
 omni_python scripts/fk_gtsp_gpu_claude2.py \
-    --ik_file data/ik/100/ik_solutions.h5 \
-    --output data/tour/100/tour.h5
+    --object_name glass \
+    --num_viewpoints 500
 ```
 
-**출력**: `data/trajectory/{N}/joint_trajectory_dp.csv` - 순서가 정해진 경로
+**주요 옵션**:
+- `--object_name`: 물체 이름 (자동 경로 생성)
+- `--num_viewpoints`: 뷰포인트 개수
+- `--lam_rot 1.0`: 회전 비용 가중치
+- `--knn 5`: k-NN 이웃 개수
+
+**출력**:
+- `data/{object_name}/trajectory/{N}/gtsp.csv`
 
 **특징**:
 - GPU 가속 순방향 기구학
 - 관절 공간 거리 최소화
 - 각 뷰포인트에서 최적 IK 해 선택
 
-**참고**: 안정성을 위해 리팩토링에서 제외됨
-
 ---
 
-### 4. curobo_check.py
+### 4. check_collision.py
 
 **역할**: 충돌 체크 및 모션 플래닝
 
 **실행**:
 ```bash
-omni_python scripts/curobo_check.py \
-    --trajectory data/trajectory/100/joint_trajectory_dp.csv \
-    --mesh data/object/microwave.obj [OPTIONS]
+omni_python scripts/check_collision.py \
+    --object_name glass \
+    --num_viewpoints 500
 ```
 
 **주요 옵션**:
-- `--robot ur20_safe.yml`: 로봇 설정 파일
-- `--replan`: 충돌 구간 재계획 활성화
-- `--replan_timeout 8.0`: 재계획 타임아웃 (초)
-- `--replan_max_attempts 3`: 최대 재계획 시도 횟수
+- `--object_name`: 물체 이름 (자동 경로 생성)
+- `--num_viewpoints`: 뷰포인트 개수
+- `--robot_config ur20.yml`: 로봇 설정 파일
 
-**출력**: `data/trajectory/{N}/joint_trajectory_dp_curobo_interpolated.csv` - 충돌 없는 경로
+**출력**:
+- `data/{object_name}/trajectory/{N}/gtsp_final.csv`
 
 **특징**:
 - 적응형 보간 (adaptive interpolation)

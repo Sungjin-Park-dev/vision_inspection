@@ -10,10 +10,7 @@ This script:
 5. Saves all IK solutions with collision-free flags to HDF5
 
 Usage:
-    python scripts/compute_ik_solutions.py \\
-        --viewpoints data/viewpoint/3000/viewpoints.h5 \\
-        --output data/ik/3000/ik_solutions.h5 \\
-        --robot ur20.yml
+   omni_python scripts/compute_ik_solutions.py --viewpoints data/viewpoint/675/viewpoints.h5
 """
 
 # ============================================================================
@@ -24,7 +21,6 @@ import os
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
-from time import perf_counter
 from typing import List, Optional, Tuple
 
 # Add parent directory to path
@@ -56,9 +52,10 @@ from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 # ============================================================================
 from common import config
 from common.cli_utils import print_section_header, print_key_value, print_success
-from common.coordinate_utils import normalize_vectors, offset_points_along_normals
+from common.coordinate_utils import normalize_vectors, offset_points_along_normals, transform_pose_to_world
+from common.kinematics_utils import quaternion_to_rotation_matrix
 from common.world_setup import setup_collision_world
-from common.trajectory_io import load_viewpoints_hdf5
+from common.data_io import load_viewpoints_hdf5, save_ik_solutions_hdf5
 from common.ik_utils import (
     Viewpoint,
     compute_ik_eaik,
@@ -134,7 +131,7 @@ class ViewpointManager:
         """Count viewpoints with collision-free IK solutions"""
         return sum(1 for vp in self.viewpoints if len(vp.safe_ik_solutions) > 0)
 
-    def update_world_poses(self, glass_pose: np.ndarray, debug_first: bool = True):
+    def update_world_poses(self, glass_pose: np.ndarray, debug_first: bool = False):
         """Update world poses for all viewpoints
 
         Args:
@@ -168,44 +165,6 @@ class ViewpointManager:
             stacked = np.empty((0, 4, 4), dtype=np.float64)
 
         return stacked, indices
-
-
-# ============================================================================
-# Utility Functions
-# ============================================================================
-def transform_pose_to_world(
-    local_pose: np.ndarray,
-    object_world_pose: np.ndarray,
-    debug: bool = False
-) -> np.ndarray:
-    """Transform local pose to world frame
-
-    Args:
-        local_pose: 4x4 pose matrix in object's local frame
-        object_world_pose: 4x4 transformation of object in world frame
-        debug: Print debug information
-
-    Returns:
-        4x4 pose matrix in world frame
-    """
-    if local_pose.shape != (4, 4):
-        raise ValueError("local_pose must be 4x4")
-    if object_world_pose.shape != (4, 4):
-        raise ValueError("object_world_pose must be 4x4")
-
-    if debug:
-        print(f"\n=== Coordinate Transform Debug ===")
-        print(f"Object world pose:\n{object_world_pose}")
-        print(f"Local pose (Z-up):\n{local_pose}")
-
-    # Simple matrix multiplication: world_pose = object_world_pose @ local_pose
-    world_pose = object_world_pose @ local_pose
-
-    if debug:
-        print(f"World pose result:\n{world_pose}")
-        print(f"===================================\n")
-
-    return world_pose
 
 
 # ============================================================================
@@ -401,200 +360,123 @@ def setup_ik_solver(cfg: ComputeConfig, world_cfg: WorldConfig) -> IKSolver:
 
 
 # ============================================================================
-# IK Processing
-# ============================================================================
-def process_viewpoints(
-    cfg: ComputeConfig,
-    ik_solver: IKSolver
-) -> Tuple[ViewpointManager, dict]:
-    """Process viewpoints: load viewpoints file, compute IK, check collisions
-
-    Returns:
-        Tuple of (viewpoint_manager, metadata)
-    """
-    print(f"\n{'='*60}")
-    print("PROCESSING VIEWPOINTS")
-    print(f"{'='*60}\n")
-
-    # Load viewpoints
-    print("Loading viewpoints...")
-    surface_positions, surface_normals, metadata = load_viewpoints_file(cfg.viewpoints_path)
-
-    # Create viewpoints from file
-    viewpoint_mgr = create_viewpoints_from_file(surface_positions, surface_normals, metadata, cfg)
-
-    # Glass object pose in world frame (identity rotation at glass_position)
-    glass_world_pose = np.eye(4, dtype=np.float64)
-    glass_world_pose[:3, 3] = cfg.glass_position
-
-    # Update world poses
-    viewpoint_mgr.update_world_poses(glass_world_pose)
-
-    # Collect world matrices
-    world_mats, used_indices = viewpoint_mgr.collect_world_matrices()
-
-    if world_mats.size == 0:
-        raise ValueError("No valid world poses found for viewpoints")
-
-    # Compute IK solutions
-    print(f"\nComputing IK solutions for {len(world_mats)} viewpoints...")
-    assign_start = perf_counter()
-    ik_results = compute_ik_eaik(world_mats)
-    assign_ik_solutions_to_viewpoints(viewpoint_mgr.viewpoints, ik_results, used_indices)
-    assign_elapsed = perf_counter() - assign_start
-
-    # Check collisions
-    print("Checking collision constraints...")
-    safe_start = perf_counter()
-    check_ik_solutions_collision(viewpoint_mgr.viewpoints, ik_solver)
-    safe_elapsed = perf_counter() - safe_start
-
-    print(f"\nTiming:")
-    print(f"  IK computation: {assign_elapsed * 1000.0:.2f} ms")
-    print(f"  Collision checking: {safe_elapsed * 1000.0:.2f} ms")
-
-    # Print statistics
-    total = len(viewpoint_mgr.viewpoints)
-    with_all = viewpoint_mgr.count_with_all_ik()
-    with_safe = viewpoint_mgr.count_with_safe_ik()
-    print(f"\nIK Statistics:")
-    print(f"  Total viewpoints: {total}")
-    print(f"  With any IK solutions: {with_all}/{total}")
-    print(f"  With safe IK solutions: {with_safe}/{total}")
-    print(f"{'='*60}\n")
-
-    return viewpoint_mgr, metadata
-
-
-# ============================================================================
-# File I/O
-# ============================================================================
-def save_ik_solutions_hdf5(
-    viewpoints: List[Viewpoint],
-    save_path: str,
-    viewpoints_path: str
-):
-    """Save all IK solutions to HDF5 file"""
-    import h5py
-
-    num_with_solutions = sum(1 for vp in viewpoints if len(vp.all_ik_solutions) > 0)
-    num_with_safe = sum(1 for vp in viewpoints if len(vp.safe_ik_solutions) > 0)
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-    with h5py.File(save_path, 'w') as f:
-        metadata_grp = f.create_group('metadata')
-        metadata_grp.attrs['num_viewpoints'] = len(viewpoints)
-        metadata_grp.attrs['num_viewpoints_with_solutions'] = num_with_solutions
-        metadata_grp.attrs['num_viewpoints_with_safe_solutions'] = num_with_safe
-        metadata_grp.attrs['timestamp'] = datetime.now().isoformat()
-        metadata_grp.attrs['viewpoints_file'] = viewpoints_path
-
-        for vp in viewpoints:
-            vp_grp_name = f'viewpoint_{vp.index:04d}'
-            vp_grp = f.create_group(vp_grp_name)
-            vp_grp.attrs['original_index'] = vp.index
-
-            if vp.world_pose is not None:
-                vp_grp.create_dataset('world_pose', data=vp.world_pose.astype(np.float32))
-            else:
-                vp_grp.create_dataset('world_pose', data=np.zeros((4, 4), dtype=np.float32))
-
-            if len(vp.all_ik_solutions) > 0:
-                all_sols = np.stack([np.asarray(sol, dtype=np.float64)
-                                    for sol in vp.all_ik_solutions])
-                vp_grp.create_dataset('all_ik_solutions', data=all_sols.astype(np.float32))
-            else:
-                vp_grp.create_dataset('all_ik_solutions', data=np.zeros((0, 6), dtype=np.float32))
-
-            collision_free_mask = np.zeros(len(vp.all_ik_solutions), dtype=bool)
-            for i, sol in enumerate(vp.all_ik_solutions):
-                sol_array = np.asarray(sol, dtype=np.float64)
-                for safe_sol in vp.safe_ik_solutions:
-                    if np.allclose(sol_array, safe_sol, atol=1e-6):
-                        collision_free_mask[i] = True
-                        break
-            vp_grp.create_dataset('collision_free_mask', data=collision_free_mask)
-
-            vp_grp.attrs['num_all_solutions'] = len(vp.all_ik_solutions)
-            vp_grp.attrs['num_safe_solutions'] = len(vp.safe_ik_solutions)
-
-    print(f"\n{'='*60}")
-    print("IK SOLUTIONS SAVED")
-    print(f"{'='*60}")
-    print(f"Output path: {save_path}")
-    print(f"Total viewpoints: {len(viewpoints)}")
-    print(f"With any solutions: {num_with_solutions}")
-    print(f"With safe solutions: {num_with_safe}")
-    print(f"File size: {os.path.getsize(save_path) / 1024:.2f} KB")
-    print(f"{'='*60}\n")
-
-
-# ============================================================================
 # Main Entry Point
 # ============================================================================
 def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(description="Compute IK solutions (CuRobo only, no Isaac Sim)")
+    """Main entry point - performs same tasks as notebook Section 2"""
+    parser = argparse.ArgumentParser(
+        description="Compute IK solutions and check collisions for viewpoints"
+    )
+    parser.add_argument(
+        "--object_name",
+        type=str,
+        default=None,
+        help="Object name for automatic path generation (e.g., 'glass', 'phone'). "
+             "If provided with --num_viewpoints, paths will be auto-generated."
+    )
+    parser.add_argument(
+        "--num_viewpoints",
+        type=int,
+        default=None,
+        help="Number of viewpoints (used with --object_name for path generation)"
+    )
     parser.add_argument(
         "--viewpoints",
         type=str,
-        required=True,
-        help="Path to viewpoints file (.h5)"
+        default=None,
+        help="Path to viewpoints HDF5 file (e.g., data/glass/viewpoint/500/viewpoints.h5). "
+             "Required if --object_name is not provided."
     )
     parser.add_argument(
         "--output",
         type=str,
         default=None,
-        help="Output path for IK solutions HDF5 file (default: data/ik/{num_points}/ik_solutions.h5)"
+        help="Path to save IK solutions HDF5 file (default: auto-generate in data/{object_name}/ik/)"
     )
     parser.add_argument(
         "--robot",
         type=str,
-        default=config.DEFAULT_ROBOT_CONFIG,
-        help='Path to CuRobo robot config YAML file (for collision spheres)'
+        default="ur20.yml",
+        help="Robot configuration file name (default: ur20.yml)"
     )
     args = parser.parse_args()
 
+    # Validate and resolve paths
+    if args.object_name is None and args.viewpoints is None:
+        parser.error("Either --object_name (with --num_viewpoints) or --viewpoints must be provided")
+
+    if args.object_name and args.num_viewpoints is None:
+        parser.error("--num_viewpoints is required when using --object_name")
+
+    # Determine viewpoints path
+    if args.object_name:
+        if args.viewpoints is None:
+            args.viewpoints = str(config.get_viewpoint_path(args.object_name, args.num_viewpoints))
+            print(f"Using auto-generated viewpoints path: {args.viewpoints}")
+
+    # Step 1: Create configuration
     cfg = ComputeConfig.from_args(args)
 
-    print_section_header("COMPUTE IK SOLUTIONS (CuRobo only)", width=60)
+    # Auto-generate output path if not provided
+    if cfg.output_path is None:
+        if args.object_name:
+            # New structure: data/{object_name}/ik/{num_viewpoints}/ik_solutions.h5
+            cfg.output_path = str(config.get_ik_path(args.object_name, args.num_viewpoints))
+        else:
+            # Fallback to old structure for backward compatibility
+            # Extract num_viewpoints from path
+            viewpoints_dir = os.path.dirname(cfg.viewpoints_path)
+            dataset_name = os.path.basename(viewpoints_dir)
+            cfg.output_path = f"data/ik/{dataset_name}/ik_solutions.h5"
+
+    print(f"\n{'='*60}")
+    print("COMPUTE IK SOLUTIONS (Section 2)")
+    print(f"{'='*60}")
     print_key_value("Viewpoints file", cfg.viewpoints_path)
+    print_key_value("Output file", cfg.output_path)
     print_key_value("Robot config", cfg.robot_config_file)
-    print_key_value("Mode", "CuRobo only (no Isaac Sim simulation)")
-    print()
+    print(f"{'='*60}\n")
 
-    start_time = perf_counter()
+    # Step 2: Load viewpoints from HDF5
+    surface_positions, surface_normals, metadata = load_viewpoints_file(cfg.viewpoints_path)
 
-    # Setup collision world
+    # Step 3: Setup collision world for IK
     world_cfg = setup_collision_world_for_ik(cfg)
 
-    # Setup IK solver
+    # Step 4: Setup IK solver
     ik_solver = setup_ik_solver(cfg, world_cfg)
 
-    # Process viewpoints
-    viewpoint_mgr, metadata = process_viewpoints(cfg, ik_solver)
-
-    # Determine output path
-    if cfg.output_path is None:
-        num_points = metadata['num_viewpoints']
-        output_dir = f'data/ik/{num_points}'
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = f'{output_dir}/ik_solutions.h5'
-    else:
-        output_path = cfg.output_path
-
-    print(f"Total time: {perf_counter() - start_time:.2f} s")
-
-    # Save IK solutions
-    save_ik_solutions_hdf5(
-        viewpoint_mgr.viewpoints,
-        output_path,
-        cfg.viewpoints_path
+    # Step 5: Create viewpoint manager
+    viewpoint_mgr = create_viewpoints_from_file(
+        surface_positions, surface_normals, metadata, cfg
     )
 
-    print("\n✓ IK computation complete!")
+    # Step 6: Update world poses (glass object pose)
+    glass_world_pose = np.eye(4, dtype=np.float64)
+    glass_world_pose[:3, :3] = quaternion_to_rotation_matrix(cfg.glass_rotation)
+    glass_world_pose[:3, 3] = cfg.glass_position
+    viewpoint_mgr.update_world_poses(glass_world_pose)
 
+    # Step 7: Collect world matrices and compute IK
+    print_section_header("COMPUTING IK SOLUTIONS", width=60)
+    world_mats, used_indices = viewpoint_mgr.collect_world_matrices()
+    print_key_value("Valid viewpoints for IK", len(used_indices))
+
+    ik_results = compute_ik_eaik(world_mats)
+    assign_ik_solutions_to_viewpoints(viewpoint_mgr.viewpoints, ik_results, used_indices)
+
+    print_key_value("Viewpoints with solutions", viewpoint_mgr.count_with_all_ik())
+
+    # Step 8: Check collision for IK solutions
+    print_section_header("CHECKING COLLISIONS", width=60)
+    check_ik_solutions_collision(viewpoint_mgr.viewpoints, ik_solver)
+    print_key_value("Viewpoints with safe solutions", viewpoint_mgr.count_with_safe_ik())
+    print()
+
+    # Step 9: Save IK solutions to HDF5
+    save_ik_solutions_hdf5(viewpoint_mgr.viewpoints, cfg.output_path, cfg.viewpoints_path)
+
+    print_success("✓ Section 2 완료!")
 
 
 if __name__ == "__main__":

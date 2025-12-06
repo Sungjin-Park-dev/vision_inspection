@@ -66,195 +66,51 @@ def generate_interpolated_path(
     return path
 
 
-def generate_multi_segment_path(
-    waypoints: List[np.ndarray],
-    steps_per_segment: int
-) -> List[np.ndarray]:
+def compute_adaptive_steps(
+    start: np.ndarray,
+    end: np.ndarray,
+    steps_per_radian: float,
+    min_steps: int,
+    max_steps: int
+) -> int:
     """
-    Generate interpolated path through multiple waypoints
+    Compute number of interpolation steps based on joint space distance
+
+    Calculates the required number of interpolation steps between two
+    joint configurations based on their Euclidean distance in joint space.
+    Excludes the last joint (wrist_3) from distance calculation as it
+    only affects tool rotation, not collision.
 
     Args:
-        waypoints: List of configurations to visit in order
-        steps_per_segment: Number of interpolation steps between each pair
+        start: Starting joint configuration
+        end: Ending joint configuration
+        steps_per_radian: Number of steps per radian of movement
+        min_steps: Minimum number of steps
+        max_steps: Maximum number of steps
 
     Returns:
-        path: Complete interpolated path through all waypoints
+        Number of interpolation steps (clamped to [min_steps, max_steps])
 
-    Examples:
-        >>> wp1 = np.array([0, 0, 0])
-        >>> wp2 = np.array([1, 1, 1])
-        >>> wp3 = np.array([2, 2, 2])
-        >>> path = generate_multi_segment_path([wp1, wp2, wp3], 1)
-        >>> len(path)
-        2  # wp2 and wp3 (wp1 is start, not included)
-    """
-    if len(waypoints) < 2:
-        raise ValueError("Need at least 2 waypoints to generate a path")
-
-    full_path = []
-
-    for i in range(len(waypoints) - 1):
-        segment = generate_interpolated_path(
-            waypoints[i],
-            waypoints[i + 1],
-            steps_per_segment
-        )
-        full_path.extend(segment)
-
-    return full_path
-
-
-def compute_path_length(
-    configurations: List[np.ndarray],
-    weights: np.ndarray = None
-) -> float:
-    """
-    Compute total path length in configuration space
-
-    Args:
-        configurations: List of joint configurations
-        weights: Optional weights for each joint dimension
-
-    Returns:
-        total_length: Sum of Euclidean distances between consecutive configs
-
-    Examples:
-        >>> configs = [np.array([0, 0]), np.array([1, 0]), np.array([1, 1])]
-        >>> compute_path_length(configs)
-        2.0
-        >>> compute_path_length(configs, weights=np.array([2.0, 1.0]))
-        3.0
-    """
-    if len(configurations) < 2:
-        return 0.0
-
-    configs = [np.asarray(c, dtype=np.float64) for c in configurations]
-
-    if weights is None:
-        weights = np.ones(configs[0].shape[0], dtype=np.float64)
-    else:
-        weights = np.asarray(weights, dtype=np.float64)
-
-    total_length = 0.0
-    for i in range(len(configs) - 1):
-        diff = configs[i + 1] - configs[i]
-        weighted_diff = weights * diff ** 2
-        distance = np.sqrt(np.sum(weighted_diff))
-        total_length += distance
-
-    return total_length
-
-
-def validate_trajectory_continuity(
-    configurations: List[np.ndarray],
-    max_step: float = None
-) -> bool:
-    """
-    Check if trajectory has no discontinuous jumps
-
-    Args:
-        configurations: List of joint configurations
-        max_step: Maximum allowed step size (optional)
-
-    Returns:
-        True if trajectory is continuous (no large jumps)
-
-    Examples:
-        >>> configs = [np.array([0, 0]), np.array([0.1, 0.1]), np.array([0.2, 0.2])]
-        >>> validate_trajectory_continuity(configs, max_step=0.2)
-        True
-        >>> configs = [np.array([0, 0]), np.array([10, 10])]
-        >>> validate_trajectory_continuity(configs, max_step=0.5)
-        False
-    """
-    if len(configurations) < 2:
-        return True
-
-    configs = [np.asarray(c, dtype=np.float64) for c in configurations]
-
-    for i in range(len(configs) - 1):
-        diff = configs[i + 1] - configs[i]
-        step_size = np.linalg.norm(diff)
-
-        if max_step is not None and step_size > max_step:
-            return False
-
-    return True
-
-
-def resample_trajectory(
-    configurations: List[np.ndarray],
-    target_num_points: int
-) -> List[np.ndarray]:
-    """
-    Resample trajectory to have a specific number of points
-
-    Uses linear interpolation to generate a uniformly sampled trajectory.
-
-    Args:
-        configurations: Original trajectory
-        target_num_points: Desired number of points in resampled trajectory
-
-    Returns:
-        resampled: Trajectory with target_num_points configurations
-
-    Raises:
-        ValueError: If configurations is empty or target_num_points < 2
-
-    Examples:
-        >>> configs = [np.array([0.0]), np.array([1.0])]
-        >>> resampled = resample_trajectory(configs, 5)
-        >>> len(resampled)
-        5
-        >>> np.allclose(resampled[0], [0.0])
-        True
-        >>> np.allclose(resampled[-1], [1.0])
+    Example:
+        >>> start = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        >>> end = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 2.0])
+        >>> steps = compute_adaptive_steps(start, end, 10.0, 5, 100)
+        >>> 5 <= steps <= 100
         True
     """
-    if len(configurations) == 0:
-        raise ValueError("Cannot resample empty trajectory")
+    # Exclude last joint (wrist_3) from distance calculation
+    # Last joint only affects tool rotation, not collision
+    start_excl_last = start[:-1] if len(start) > 1 else start
+    end_excl_last = end[:-1] if len(end) > 1 else end
 
-    if target_num_points < 2:
-        raise ValueError("target_num_points must be at least 2")
+    # Compute Euclidean distance in joint space (excluding last joint)
+    distance = np.linalg.norm(end_excl_last - start_excl_last)
 
-    configs = [np.asarray(c, dtype=np.float64) for c in configurations]
+    # Calculate steps proportional to distance
+    steps = int(distance * steps_per_radian)
 
-    if len(configs) == target_num_points:
-        return configs
-
-    # Compute cumulative arc length along original trajectory
-    arc_lengths = [0.0]
-    for i in range(len(configs) - 1):
-        diff = configs[i + 1] - configs[i]
-        distance = np.linalg.norm(diff)
-        arc_lengths.append(arc_lengths[-1] + distance)
-
-    total_length = arc_lengths[-1]
-
-    # Generate target arc lengths for resampled points
-    target_lengths = np.linspace(0, total_length, target_num_points)
-
-    # Interpolate configurations at target arc lengths
-    resampled = []
-    for target_s in target_lengths:
-        # Find the segment containing this arc length
-        for i in range(len(arc_lengths) - 1):
-            if arc_lengths[i] <= target_s <= arc_lengths[i + 1]:
-                # Interpolate within this segment
-                segment_length = arc_lengths[i + 1] - arc_lengths[i]
-                if segment_length > 0:
-                    alpha = (target_s - arc_lengths[i]) / segment_length
-                else:
-                    alpha = 0.0
-
-                config = configs[i] + alpha * (configs[i + 1] - configs[i])
-                resampled.append(config)
-                break
-        else:
-            # Target length is at or beyond the end
-            resampled.append(configs[-1].copy())
-
-    return resampled
+    # Clamp to [min_steps, max_steps]
+    return max(min_steps, min(steps, max_steps))
 
 
 if __name__ == "__main__":

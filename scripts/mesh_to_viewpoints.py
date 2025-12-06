@@ -16,13 +16,16 @@ Coordinate system:
 - Input: Z-up mesh (compatible with Isaac Sim / URDF / Pinocchio)
 - Output: Z-up surface positions and normals
 - Camera positions computed as: surface_position + surface_normal * working_distance
+
+Usage:
+    omni_python scripts/mesh_to_viewpoints.py --mesh_file data/object/glass.obj
 """
 
 import os
 import sys
 import argparse
 import numpy as np
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict
 from dataclasses import dataclass
 
 # Add parent directory to path for imports
@@ -36,7 +39,7 @@ from common.cli_utils import print_section_header, print_key_value
 from common.coordinate_utils import normalize_vectors, offset_points_along_normals
 
 # Import TSP utilities for saving results
-from common.tsp_utils import save_viewpoints
+from common.data_io import save_viewpoints_hdf5
 
 
 @dataclass
@@ -675,104 +678,6 @@ def sample_points_adaptive_poisson(
     return points, normals
 
 
-def sample_points_adaptive(
-    mesh: o3d.geometry.TriangleMesh,
-    num_points: int,
-    curvature_weight: float = 0.5,
-    base_overlap_ratio: float = config.CAMERA_OVERLAP_RATIO
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Sample points adaptively based on surface curvature with local overlap weighting
-
-    Higher curvature regions get more samples due to:
-    1. Curvature-based weighting (existing behavior)
-    2. Local overlap adjustment (baseline overlap everywhere, curvature adds extra overlap)
-
-    Args:
-        mesh: Open3D triangle mesh
-        num_points: Number of points to sample
-        curvature_weight: Weight for curvature-based sampling (0-1)
-            - 0.0: Uniform sampling
-            - 1.0: Maximum curvature influence + adaptive overlap
-        base_overlap_ratio: Baseline overlap ratio used for low-curvature regions
-
-    Returns:
-        points: (N, 3) array of point coordinates
-        normals: (N, 3) array of surface normals
-    """
-    print(f"Sampling {num_points} points using adaptive (curvature-based) sampling...")
-
-    # Compute curvature
-    curvatures = compute_surface_curvature(mesh)
-
-    # Normalize curvatures to [0, 1]
-    curvatures_norm = curvatures / (np.max(curvatures) + 1e-8)
-
-    # Compute vertex weights (mix of uniform and curvature-based)
-    uniform_weight = 1.0 - curvature_weight
-    weights = uniform_weight + curvature_weight * curvatures_norm
-
-    # Normalize to probabilities
-    weights = weights / np.sum(weights)
-
-    # Sample vertices according to weights
-    vertices = np.asarray(mesh.vertices)
-    triangles = np.asarray(mesh.triangles)
-
-    # Sample more from high-curvature regions
-    # For each triangle, compute average weight and local overlap adjustment
-    tri_weights = np.mean(weights[triangles], axis=1)
-
-    # Apply local overlap weighting
-    # Higher overlap → smaller effective coverage → need more samples
-    if curvature_weight > 1e-6:
-        for i, tri in enumerate(triangles):
-            # Average normalized curvature of triangle vertices
-            tri_curvature_norm = np.mean(curvatures_norm[tri])
-
-            # Compute local overlap for this triangle
-            local_overlap = compute_local_overlap(
-                tri_curvature_norm, curvature_weight, base_overlap_ratio
-            )
-
-            # Increase weight proportional to overlap growth beyond baseline
-            overlap_factor = 1.0 + max(0.0, local_overlap - base_overlap_ratio)
-            tri_weights[i] *= overlap_factor
-
-    tri_weights = tri_weights / np.sum(tri_weights)
-
-    # Sample points from triangles
-    sampled_points = []
-    sampled_normals = []
-
-    # Compute triangle normals
-    if not mesh.has_triangle_normals():
-        mesh.compute_triangle_normals()
-    tri_normals = np.asarray(mesh.triangle_normals)
-
-    for _ in range(num_points):
-        # Choose triangle based on weights
-        tri_idx = np.random.choice(len(triangles), p=tri_weights)
-
-        # Random barycentric coordinates
-        r1, r2 = np.random.random(2)
-        if r1 + r2 > 1:
-            r1, r2 = 1 - r1, 1 - r2
-
-        # Interpolate position
-        tri = triangles[tri_idx]
-        point = (1 - r1 - r2) * vertices[tri[0]] + r1 * vertices[tri[1]] + r2 * vertices[tri[2]]
-
-        sampled_points.append(point)
-        sampled_normals.append(tri_normals[tri_idx])
-
-    points = np.array(sampled_points, dtype=np.float32)
-    normals = np.array(sampled_normals, dtype=np.float32)
-
-    print(f"Sampled {len(points)} points (adaptive)")
-    return points, normals
-
-
 def compute_viewpoints_from_surface(
     points: np.ndarray,
     normals: np.ndarray,
@@ -816,186 +721,6 @@ def compute_viewpoints_from_surface(
 
     return viewpoints
 
-def filter_downward_facing_viewpoints(
-    viewpoints: List[Viewpoint],
-    z_threshold: float = 0.0
-) -> Tuple[List[Viewpoint], int]:
-    """
-    Filter out downward-facing viewpoints (robot cannot access from below)
-
-    Args:
-        viewpoints: List of viewpoints to filter
-        z_threshold: Normal Z component threshold (default: 0.0)
-            - Viewpoints with normal Z < z_threshold are removed
-            - 0.0: Remove all downward-facing (Z < 0)
-            - -0.5: Remove only nearly vertical downward (Z < -0.5)
-
-    Returns:
-        filtered_viewpoints: List of viewpoints with normal Z >= z_threshold
-        num_removed: Number of viewpoints removed
-    """
-    filtered_viewpoints = []
-    num_removed = 0
-
-    for vp in viewpoints:
-        # vp.normal is camera direction (points toward surface)
-        # Surface normal = -vp.normal
-        surface_normal_z = -vp.normal[2]
-
-        if surface_normal_z >= z_threshold:
-            filtered_viewpoints.append(vp)
-        else:
-            num_removed += 1
-
-    print(f"Filtered downward-facing viewpoints:")
-    print(f"  Removed: {num_removed}")
-    print(f"  Remaining: {len(filtered_viewpoints)}")
-
-    return filtered_viewpoints, num_removed
-
-
-def apply_minimum_tilt_angle(
-    viewpoints: List[Viewpoint],
-    camera_spec: CameraSpec,
-    min_tilt_deg: float = 30.0
-) -> Tuple[List[Viewpoint], int]:
-    """
-    Apply minimum tilt angle to nearly-horizontal viewpoints
-
-    For viewpoints with surface normals that are nearly horizontal,
-    tilt them upward to ensure robot can approach from above.
-
-    IMPORTANT: To inspect the same Z-height region after tilting,
-    the viewpoint Z must be increased proportionally.
-
-    Args:
-        viewpoints: List of viewpoints
-        camera_spec: Camera specifications
-        min_tilt_deg: Minimum tilt angle from horizontal in degrees (default: 30)
-            - 0: Horizontal (side view)
-            - 90: Vertical (top view)
-
-    Returns:
-        adjusted_viewpoints: List of viewpoints with adjusted normals
-        num_adjusted: Number of viewpoints that were adjusted
-    """
-    min_tilt_rad = np.radians(min_tilt_deg)
-    min_z_component = np.sin(min_tilt_rad)  # Minimum |normal.z| for surface normal
-
-    adjusted_viewpoints = []
-    num_adjusted = 0
-    wd = camera_spec.get_working_distance_m()
-
-    print(f"Applying minimum tilt angle ({min_tilt_deg}°)...")
-
-    for vp in viewpoints:
-        # vp.normal is camera direction (points toward surface)
-        # Surface normal = -vp.normal
-        surface_normal = -vp.normal
-
-        # Check if surface normal is nearly horizontal
-        if abs(surface_normal[2]) < min_z_component:
-            # Adjust viewpoint to view from above at minimum tilt angle
-
-            # Compute current horizontal magnitude
-            horizontal_mag = np.sqrt(surface_normal[0]**2 + surface_normal[1]**2)
-
-            if horizontal_mag < 1e-6:
-                # Already vertical, no adjustment needed
-                adjusted_viewpoints.append(vp)
-                continue
-
-            # Get original surface point
-            # vp.position = surface + surface_normal * wd
-            # vp.normal = -surface_normal (camera direction)
-            # Therefore: surface = vp.position + vp.normal * wd
-            surface_point = vp.position + vp.normal * wd
-
-            # Compute horizontal unit vector (direction from surface point to camera in XY plane)
-            horizontal_dir = np.array([surface_normal[0], surface_normal[1], 0], dtype=np.float32)
-            horizontal_dir = horizontal_dir / (horizontal_mag + 1e-8)
-
-            # New camera position to view surface_point at min_tilt_angle
-            # Camera must be:
-            # - At working_distance from surface_point
-            # - At min_tilt_angle above horizontal
-            #
-            # Decompose working distance:
-            # - Horizontal component: wd * cos(min_tilt_rad)
-            # - Vertical component: wd * sin(min_tilt_rad)
-
-            horizontal_distance = wd * np.cos(min_tilt_rad)
-            vertical_offset = wd * np.sin(min_tilt_rad)
-
-            # New viewpoint position
-            # Move horizontally along horizontal_dir, then up in Z
-            adjusted_position = surface_point + horizontal_dir * horizontal_distance
-            adjusted_position[2] += vertical_offset
-
-            # Camera direction: from viewpoint toward surface_point
-            adjusted_camera_direction = surface_point - adjusted_position
-            adjusted_camera_direction = adjusted_camera_direction / np.linalg.norm(adjusted_camera_direction)
-
-            # Verify working distance (sanity check)
-            actual_distance = np.linalg.norm(adjusted_position - surface_point)
-
-            # Create adjusted viewpoint (coverage_area stays same - viewing same region)
-            adjusted_vp = Viewpoint(
-                position=adjusted_position,
-                normal=adjusted_camera_direction,
-                coverage_area=vp.coverage_area,
-                depth_variation=vp.depth_variation
-            )
-
-            adjusted_viewpoints.append(adjusted_vp)
-            num_adjusted += 1
-        else:
-            # Normal is already steep enough
-            adjusted_viewpoints.append(vp)
-
-    print(f"  Adjusted {num_adjusted} nearly-horizontal viewpoints")
-    print(f"  All viewpoints now view from >= {min_tilt_deg}° above horizontal")
-    print(f"  Viewpoint Z-positions adjusted to maintain inspection coverage")
-
-    return adjusted_viewpoints, num_adjusted
-
-
-def compute_coverage_statistics(
-    viewpoints: List[Viewpoint],
-    mesh_surface_area: float,
-    mesh: o3d.geometry.TriangleMesh = None,
-    camera_spec: CameraSpec = None,
-    use_voxel_coverage: bool = True
-) -> dict:
-    """
-    Compute coverage statistics
-
-    Args:
-        viewpoints: List of viewpoints
-        mesh_surface_area: Total mesh surface area in m²
-        mesh: Mesh object (required for voxel-based coverage)
-        camera_spec: Camera spec (required for voxel-based coverage)
-        use_voxel_coverage: If True, use accurate voxel-based calculation
-
-    Returns:
-        stats: Dictionary with coverage statistics
-    """
-    # Simple coverage (with overlap)
-    simple_coverage = sum(vp.coverage_area for vp in viewpoints)
-    simple_ratio = simple_coverage / mesh_surface_area if mesh_surface_area > 0 else 0.0
-
-    stats = {
-        'num_viewpoints': len(viewpoints),
-        'simple_coverage_m2': simple_coverage,
-        'simple_coverage_ratio': simple_ratio,
-        'mesh_area_m2': mesh_surface_area,
-        'avg_depth_variation': np.mean([vp.depth_variation for vp in viewpoints]) if viewpoints else 0.0,
-        'max_depth_variation': np.max([vp.depth_variation for vp in viewpoints]) if viewpoints else 0.0
-    }
-
-    return stats
-
-
 def visualize_viewpoints(
     mesh: o3d.geometry.TriangleMesh,
     viewpoints: List[Viewpoint],
@@ -1017,6 +742,13 @@ def visualize_viewpoints(
     mesh_vis = o3d.geometry.TriangleMesh(mesh)
     mesh_vis.paint_uniform_color([0.7, 0.7, 0.7])
     geometries.append(mesh_vis)
+
+    # Add coordinate frame at origin
+    coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
+        size=0.5,  # 50mm frame size
+        origin=[0, 0, 0]
+    )
+    geometries.append(coord_frame)
 
     # Add viewpoint positions as spheres (green)
     for vp in viewpoints:
@@ -1041,6 +773,7 @@ def visualize_viewpoints(
 
     # Visualize
     print(f"\nVisualizing {len(viewpoints)} viewpoints...")
+    print("  Coordinate frame: X (red), Y (green), Z (blue)")
     print("  Green spheres: viewpoint positions")
     print("  Red arrows: camera viewing directions")
 
@@ -1052,42 +785,21 @@ def visualize_viewpoints(
     )
 
 
-def normalize_coordinates(points: np.ndarray) -> Tuple[np.ndarray, dict]:
-    """
-    Normalize point coordinates to [0, 1] range
-
-    Args:
-        points: (N, 3) array
-
-    Returns:
-        normalized_points: (N, 3) array in [0, 1]
-        normalization_info: dict with min/max for denormalization
-    """
-    min_coords = points.min(axis=0)
-    max_coords = points.max(axis=0)
-
-    # Normalize to [0, 1]
-    normalized = (points - min_coords) / (max_coords - min_coords + 1e-8)
-
-    normalization_info = {
-        'min': min_coords,
-        'max': max_coords
-    }
-
-    return normalized, normalization_info
-
-
 def main():
     parser = argparse.ArgumentParser(
         description='FOV-based Viewpoint Sampling for Vision Inspection'
     )
 
     # Input/Output
-    parser.add_argument('--mesh_file', type=str, required=True,
-                        help='Path to mesh file (.obj) - Z-up coordinate system')
+    parser.add_argument('--object_name', type=str, default=None,
+                        help='Object name for automatic path generation (e.g., "glass", "phone"). '
+                             'If provided, mesh_file and save_path will be auto-generated.')
+    parser.add_argument('--mesh_file', type=str, default=None,
+                        help='Path to mesh file (.obj) - Z-up coordinate system. '
+                             'Required if --object_name is not provided.')
     parser.add_argument('--save_path', type=str, default=None,
-                        help='Path to save viewpoints as HDF5 file (default: data/viewpoint/{num_points}/viewpoints.h5)')
-
+                        help='Path to save viewpoints as HDF5 file (default: data/{object_name}/viewpoint/{num_points}/viewpoints.h5)')
+    
     # Camera specifications (defaults from common.config)
     parser.add_argument('--fov_width', type=float, default=config.CAMERA_FOV_WIDTH_MM,
                         help=f'Field of view width in mm (default: {config.CAMERA_FOV_WIDTH_MM})')
@@ -1101,6 +813,8 @@ def main():
                         help=f'Overlap ratio between views (default: {config.CAMERA_OVERLAP_RATIO} for {config.CAMERA_OVERLAP_RATIO*100:.0f}%%)')
 
     # Sampling parameters
+    parser.add_argument('--num_points', type=int, default=None,
+                        help='Number of viewpoints to sample (default: auto-calculate based on mesh and camera FOV)')
     parser.add_argument('--adaptive_sampling', action='store_true',
                         help='Use adaptive sampling based on surface curvature (for point distribution)')
     parser.add_argument('--curvature_weight', type=float, default=0.5,
@@ -1115,25 +829,22 @@ def main():
                         help='Check depth of field constraints')
     parser.add_argument('--remove_invalid_dof', action='store_true',
                         help='Remove viewpoints that violate DOF constraints')
-
-    # Viewpoint filtering for robot accessibility
-    parser.add_argument('--filter_downward', action='store_true', default=True,
-                        help='Filter out downward-facing viewpoints (default: True)')
-    parser.add_argument('--no_filter_downward', dest='filter_downward', action='store_false',
-                        help='Disable downward-facing viewpoint filtering')
-    parser.add_argument('--apply_tilt', action='store_true', default=True,
-                        help='Apply minimum tilt angle to horizontal viewpoints (default: True)')
-    parser.add_argument('--no_apply_tilt', dest='apply_tilt', action='store_false',
-                        help='Disable tilt angle adjustment')
-    parser.add_argument('--min_tilt_angle', type=float, default=30.0,
-                        help='Minimum tilt angle from horizontal in degrees (default: 30.0)')
-
     # Visualization
     parser.add_argument('--visualize', action='store_true',
                         help='Visualize viewpoints with Open3D')
 
 
     args = parser.parse_args()
+
+    # Validate and resolve paths
+    if args.object_name is None and args.mesh_file is None:
+        parser.error("Either --object_name or --mesh_file must be provided")
+
+    # Determine mesh file path
+    if args.object_name:
+        if args.mesh_file is None:
+            args.mesh_file = str(config.get_mesh_path(args.object_name))
+            print(f"Using auto-generated mesh path: {args.mesh_file}")
 
     # Create camera spec
     camera_spec = CameraSpec(
@@ -1151,12 +862,18 @@ def main():
     # Load mesh
     mesh, surface_area = load_mesh_file(args.mesh_file)
 
-    # Automatically estimate required number of viewpoints
-    num_points = estimate_required_viewpoints(
-        mesh, camera_spec,
-        target_coverage=1.0,
-        curvature_weight=args.curvature_weight
-    )
+    # Determine number of viewpoints
+    if args.num_points is not None:
+        # User specified number of points
+        num_points = args.num_points
+        print(f"\n✓ Using user-specified number of viewpoints: {num_points}")
+    else:
+        # Automatically estimate required number of viewpoints
+        num_points = estimate_required_viewpoints(
+            mesh, camera_spec,
+            target_coverage=1.0,
+            curvature_weight=args.curvature_weight
+        )
 
     # Sample surface points
     # Use curvature-stratified Poisson disk sampling
@@ -1176,57 +893,18 @@ def main():
     viewpoints = compute_viewpoints_from_surface(surface_points, surface_normals, camera_spec)
     print(f"  Generated {len(viewpoints)} viewpoints")
 
-    # Filter viewpoints for robot accessibility
-    num_downward_removed = 0
-    num_tilt_adjusted = 0
-
-    if args.filter_downward:
-        print_section_header("FILTERING DOWNWARD-FACING VIEWPOINTS", width=60)
-        viewpoints, num_downward_removed = filter_downward_facing_viewpoints(
-            viewpoints, z_threshold=0.0
-        )
-
-    if args.apply_tilt:
-        print_section_header("APPLYING MINIMUM TILT ANGLE", width=60)
-        viewpoints, num_tilt_adjusted = apply_minimum_tilt_angle(
-            viewpoints, camera_spec, min_tilt_deg=args.min_tilt_angle
-        )
-
-    # Compute statistics
-    stats = compute_coverage_statistics(
-        viewpoints, surface_area,
-        mesh=None,
-        camera_spec=None,
-        use_voxel_coverage=False,
-    )
-
-    # Print results
-    print_section_header("RESULTS", width=60)
-    print_key_value("Number of viewpoints", stats['num_viewpoints'])
-    print_key_value("Mesh surface area", f"{stats['mesh_area_m2'] * 1e6:.2f} mm²")
-
-    # Print filtering statistics
-    if args.filter_downward or args.apply_tilt:
-        print(f"\nViewpoint filtering (robot accessibility):")
-        if args.filter_downward:
-            print(f"  Downward-facing removed: {num_downward_removed}")
-        if args.apply_tilt:
-            print(f"  Horizontal viewpoints adjusted: {num_tilt_adjusted}")
-            print(f"  Minimum tilt angle: {args.min_tilt_angle}°")
-            print(f"  Z-positions adjusted to maintain coverage height")
-
-    print(f"Total coverage: {stats['simple_coverage_m2'] * 1e6:.2f} mm²")
-    print(f"Coverage ratio (with overlap): {stats['simple_coverage_ratio'] * 100:.1f}%")
-
-    print("=" * 60)
-
     # Determine save path
     if args.save_path is None:
         # Auto-generate save path with num_points subdirectory
         num_points = len(viewpoints)
-        output_dir = f'data/viewpoint/{num_points}'
-        os.makedirs(output_dir, exist_ok=True)
-        args.save_path = f'{output_dir}/viewpoints.h5'
+        if args.object_name:
+            # New structure: data/{object_name}/viewpoint/{num_points}/viewpoints.h5
+            args.save_path = str(config.get_viewpoint_path(args.object_name, num_points))
+        else:
+            # Fallback to old structure for backward compatibility
+            output_dir = f'data/viewpoint/{num_points}'
+            os.makedirs(output_dir, exist_ok=True)
+            args.save_path = f'{output_dir}/viewpoints.h5'
         print(f"\nAuto-generated save path: {args.save_path}")
 
     # Save to HDF5
@@ -1289,11 +967,10 @@ def main():
         print()
 
         # Save using simplified viewpoints format
-        save_viewpoints(
-            file_path=args.save_path,
-            points=surface_positions,      # Surface positions (not camera positions)
+        save_viewpoints_hdf5(
+            positions=surface_positions,      # Surface positions (not camera positions)
             normals=surface_normals,       # Surface normals (not camera directions)
-            mesh_file=args.mesh_file,
+            output_path=args.save_path,
             camera_spec=camera_spec.to_dict(),
         )
 

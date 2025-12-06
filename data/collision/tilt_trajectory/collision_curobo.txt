@@ -1,0 +1,37 @@
+=== Collision Report (CuRobo) @ 2025-11-25 00:48:53 ===
+Trajectory: tilt_trajectory.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/glass.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation mode: adaptive
+Interpolated configurations: 835
+
+Total waypoints: 22
+Total configurations checked: 857
+Collisions at waypoints: 0
+Segment collisions (raw count): 0
+Total collisions: 0
+Collision-free configurations: 857
+Collision rate (%): 0.00
+
+Collision waypoint indices: None
+Collision segments (unique pairs): None
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 0
+  Segments replanned (success): 0
+  Segments failed: 0
+  Success rate: 0.0%
+  Replanned segment indices: None
+
+Segment Statistics:
+  Collision segments: 0
+  Replanning segments: 0
+
+Timing:
+  Collision checking: 0.018 s
+  Replanning:         0.000 s
+  Total:              1680.777 s

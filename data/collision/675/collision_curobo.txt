@@ -155,3 +155,78 @@ Timing:
   Collision checking: 0.016 s
   Replanning:         1.312 s
   Total:              50050.663 s
+
+=== Collision Report (CuRobo) @ 2025-11-24 13:42:38 ===
+Trajectory: data/trajectory/675/gtsp.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/glass.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation mode: adaptive
+Interpolated configurations: 4465
+
+Total waypoints: 675
+Total configurations checked: 5140
+Collisions at waypoints: 0
+Segment collisions (raw count): 295
+Total collisions: 295
+Collision-free configurations: 4845
+Collision rate (%): 5.64
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 160->161, 437->438, 670->671
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 3
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 160, 437, 670
+
+Segment Statistics:
+  Collision segments: 3
+    Segments: 160, 437, 670
+  Replanning segments: 3
+    Segments: 160, 437, 670
+
+Timing:
+  Collision checking: 0.016 s
+  Replanning:         1.369 s
+  Total:              50168.241 s
+
+=== Collision Report (CuRobo) @ 2025-12-06 10:10:12 ===
+Trajectory: /isaac-sim/curobo/vision_inspection/data/glass/trajectory/675/gtsp.csv
+Robot config: ur20_safe.yml
+Collision checker: CuRobo (GPU-accelerated)
+Obstacle meshes: /isaac-sim/curobo/vision_inspection/data/object/glass.obj
+Collision margin: 0.0
+Interpolation enabled: True
+Interpolation mode: adaptive
+Interpolated configurations: 6137
+
+Total waypoints: 634
+Total configurations checked: 6771
+Collisions at waypoints: 0
+Segment collisions (raw count): 499
+Total collisions: 499
+Collision-free configurations: 6272
+Collision rate (%): 7.24
+
+Collision waypoint indices: None
+Collision segments (unique pairs): 75->76, 263->264, 580->581, 624->625
+
+Motion Replanning Analysis:
+  Replanning enabled: True
+  Iterations performed: 1
+  Segments replanned (success): 4
+  Segments failed: 0
+  Success rate: 100.0%
+  Replanned segment indices: 75, 263, 580, 624
+
+Segment Statistics:
+  Collision segments: 4
+    Segments: 75, 263, 580, 624
+  Replanning segments: 4
+    Segments: 75, 263, 580, 624
