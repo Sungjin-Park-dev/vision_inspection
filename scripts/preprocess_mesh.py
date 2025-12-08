@@ -27,7 +27,9 @@ import os
 import sys
 import argparse
 import numpy as np
-from typing import Dict, Any, Tuple, List
+from dataclasses import dataclass
+from typing import Dict, Any, Tuple, List, Optional
+from pathlib import Path
 import copy
 
 # Add parent directory to path for imports
@@ -38,6 +40,7 @@ import trimesh
 import open3d as o3d
 
 # Common utilities
+from common import config
 from common.cli_utils import (
     print_section_header,
     print_key_value,
@@ -45,6 +48,95 @@ from common.cli_utils import (
     print_warning,
     print_error
 )
+
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+@dataclass
+class PreprocessConfig:
+    """Configuration for mesh preprocessing
+
+    Attributes:
+        input_path: Input OBJ file path
+        object_name: Object name for auto-path generation
+        output_path: Output PLY file path (auto-generated if None)
+        material_name: Exact material name to extract
+        material_rgb: RGB color string "R,G,B" to match
+        color_tolerance: RGB distance tolerance for color matching
+        visualize: Show meshes in Open3D viewer
+        no_save: Skip saving output file
+    """
+    # Input/Output
+    input_path: Optional[str] = None
+    object_name: Optional[str] = None
+    output_path: Optional[str] = None
+
+    # Material selection (exactly one must be set)
+    material_name: Optional[str] = None
+    material_rgb: Optional[str] = None
+
+    # Options
+    color_tolerance: float = 5.0
+    visualize: bool = False
+    no_save: bool = False
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> 'PreprocessConfig':
+        """Create configuration from command line arguments"""
+        return cls(
+            input_path=args.input,
+            object_name=args.object_name,
+            output_path=args.output,
+            material_name=args.material_name,
+            material_rgb=args.material_rgb,
+            color_tolerance=args.color_tolerance,
+            visualize=args.visualize,
+            no_save=args.no_save,
+        )
+
+    def resolve_paths(self) -> None:
+        """Resolve input/output paths from object_name if needed"""
+        # Generate input path from object_name
+        if self.input_path is None and self.object_name:
+            # Try multiple possible source files
+            possible_sources = ["target.obj", "source.obj", f"{self.object_name}.obj"]
+            for source_name in possible_sources:
+                candidate = config.get_mesh_path(self.object_name, source_name)
+                if candidate.exists():
+                    self.input_path = str(candidate)
+                    break
+
+            if self.input_path is None:
+                # Default to source.obj even if it doesn't exist (will error later)
+                self.input_path = str(config.get_mesh_path(self.object_name, "source.obj"))
+
+        # Generate output path
+        if self.output_path is None:
+            if self.object_name:
+                # New structure: data/{object_name}/mesh/target.ply
+                self.output_path = str(config.get_mesh_path(self.object_name, "target.ply"))
+            elif self.input_path:
+                # Fallback: same directory as input
+                self.output_path = auto_generate_output_path(self.input_path)
+
+    def validate(self) -> List[str]:
+        """Validate configuration and return list of errors"""
+        errors = []
+
+        # Must have input source
+        if self.input_path is None and self.object_name is None:
+            errors.append("Either --input or --object_name must be provided")
+
+        # Must have exactly one material selection method
+        if self.material_name is None and self.material_rgb is None:
+            errors.append("Either --material-name or --material-rgb must be provided")
+
+        if self.material_name is not None and self.material_rgb is not None:
+            errors.append("Cannot specify both --material-name and --material-rgb")
+
+        return errors
 
 
 # ============================================================================
@@ -482,24 +574,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # By material name
+  # Using object name (recommended - NEW)
+  omni_python preprocess_mesh.py \\
+      --object_name glass \\
+      --material_rgb "0,255,0" \\
+      --visualize
+
+  # Using explicit paths
   omni_python preprocess_mesh.py \\
       --input data/object/sample_step_scaled.obj \\
       --material-name "Opaque(0,255,0).001" \\
-      --visualize
-
-  # By RGB color (recommended)
-  omni_python preprocess_mesh.py \\
-      --input data/object/sample_step_scaled.obj \\
-      --material-rgb "0,255,0" \\
-      --color-tolerance 5.0 \\
       --output data/object/target_surface.ply
         """
     )
 
-    # Input/Output
-    parser.add_argument('--input', required=True,
-                        help='Input OBJ file path')
+    # Input/Output (mutually exclusive)
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument('--object_name',
+                             help='Object name for auto-path generation (e.g., "glass", "phone")')
+    input_group.add_argument('--input',
+                             help='Input OBJ file path')
+
     parser.add_argument('--output', default=None,
                         help='Output PLY file path (auto-generated if not specified)')
 
@@ -521,15 +616,33 @@ Examples:
 
     args = parser.parse_args()
 
+    # Create and validate config
+    cfg = PreprocessConfig.from_args(args)
+    errors = cfg.validate()
+    if errors:
+        for error in errors:
+            parser.error(error)
+
+    # Resolve paths
+    cfg.resolve_paths()
+
     # ========================================================================
-    # 1. Validate input
+    # 1. Configuration
     # ========================================================================
     print_section_header("MESH PREPROCESSING", width=70)
-    print(f"Input: {args.input}")
-    print(f"Coordinate system: Z-up (Isaac Sim / URDF / Pinocchio convention)")
+    print(f"Coordinate system: Z-up (Isaac Sim / URDF / Pinocchio convention)\n")
 
-    if not os.path.exists(args.input):
-        print_error(f"Input file not found: {args.input}")
+    if cfg.object_name:
+        print_key_value("Object name", cfg.object_name, width=35)
+    print_key_value("Input", cfg.input_path, width=35)
+    print_key_value("Output", cfg.output_path if not cfg.no_save else "(dry run)", width=35)
+    print()
+
+    if not os.path.exists(cfg.input_path):
+        print_error(f"Input file not found: {cfg.input_path}")
+        if cfg.object_name:
+            print("\nSuggestion:")
+            print(f"  Place your mesh file at: {config.get_mesh_path(cfg.object_name, 'source.obj')}")
         sys.exit(1)
 
     # ========================================================================
@@ -537,7 +650,7 @@ Examples:
     # ========================================================================
     print_section_header("LOADING MESH", width=70)
     try:
-        mesh_trimesh, material_info = load_obj_with_materials(args.input)
+        mesh_trimesh, material_info = load_obj_with_materials(cfg.input_path)
     except Exception as e:
         print_error(f"Failed to load mesh: {e}")
         sys.exit(1)
@@ -546,7 +659,7 @@ Examples:
     # 3. Parse MTL file
     # ========================================================================
     print_section_header("PARSING MATERIALS", width=70)
-    mtl_path = os.path.join(os.path.dirname(args.input), material_info['mtl_file'])
+    mtl_path = os.path.join(os.path.dirname(cfg.input_path), material_info['mtl_file'])
 
     if not os.path.exists(mtl_path):
         print_error(f"MTL file not found: {mtl_path}")
@@ -571,10 +684,10 @@ Examples:
     # ========================================================================
     print_section_header("SELECTING TARGET MATERIAL", width=70)
 
-    if args.material_name:
+    if cfg.material_name:
         # By material name
-        if args.material_name not in materials:
-            print_error(f"Material '{args.material_name}' not found in MTL file")
+        if cfg.material_name not in materials:
+            print_error(f"Material '{cfg.material_name}' not found in MTL file")
             print("\nAvailable materials:")
             for name, props in materials.items():
                 if 'Kd' in props:
@@ -582,24 +695,24 @@ Examples:
                     print(f"  - {name}: RGB{rgb}")
             sys.exit(1)
 
-        target_materials = [args.material_name]
-        print(f"Selected material: {args.material_name}")
+        target_materials = [cfg.material_name]
+        print(f"Selected material: {cfg.material_name}")
 
     else:
         # By RGB color
         try:
-            r, g, b = map(int, args.material_rgb.split(','))
+            r, g, b = map(int, cfg.material_rgb.split(','))
             target_rgb = (r, g, b)
         except ValueError:
-            print_error(f"Invalid RGB format: '{args.material_rgb}'")
+            print_error(f"Invalid RGB format: '{cfg.material_rgb}'")
             print("Expected format: R,G,B (e.g., '0,255,0')")
             sys.exit(1)
 
-        target_materials = match_material_by_color(materials, target_rgb, args.color_tolerance)
+        target_materials = match_material_by_color(materials, target_rgb, cfg.color_tolerance)
 
         if not target_materials:
             print_error(f"No materials matched RGB{target_rgb}")
-            print(f"Tolerance: ±{args.color_tolerance}")
+            print(f"Tolerance: ±{cfg.color_tolerance}")
             print("\nAll materials with distances:")
             for name, props in materials.items():
                 if 'Kd' in props:
@@ -609,7 +722,7 @@ Examples:
             sys.exit(1)
 
         print(f"Target RGB: {target_rgb}")
-        print(f"Tolerance: ±{args.color_tolerance}")
+        print(f"Tolerance: ±{cfg.color_tolerance}")
         print(f"Matched materials: {target_materials}")
 
     # ========================================================================
@@ -650,17 +763,17 @@ Examples:
     # ========================================================================
     # 8. Visualize if requested
     # ========================================================================
-    if args.visualize:
+    if cfg.visualize:
         print_section_header("VISUALIZATION", width=70)
         visualize_separated_meshes(target_mesh, full_mesh)
 
     # ========================================================================
     # 9. Save target mesh
     # ========================================================================
-    if not args.no_save:
+    if not cfg.no_save:
         print_section_header("SAVING TARGET MESH", width=70)
 
-        output_path = args.output or auto_generate_output_path(args.input)
+        output_path = cfg.output_path
         print(f"Output: {output_path}")
         print(f"Format: Binary PLY (compressed)")
 
@@ -676,12 +789,11 @@ Examples:
     # ========================================================================
     print_section_header("COMPLETE", width=70)
     print("Next steps:")
-    if not args.no_save:
-        output_path = args.output or auto_generate_output_path(args.input)
-        print(f"  1. Verify target mesh: {output_path}")
+    if not cfg.no_save:
+        print(f"  1. Verify target mesh: {cfg.output_path}")
         print(f"  2. Generate viewpoints:")
         print(f"     omni_python scripts/mesh_to_viewpoints.py \\")
-        print(f"         --mesh_file {output_path} \\")
+        print(f"         --mesh_file {cfg.output_path} \\")
         print(f"         --num_points 100 \\")
         print(f"         --visualize")
     print("\n✓ Mesh preprocessing complete!")

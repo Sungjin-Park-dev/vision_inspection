@@ -161,9 +161,17 @@ omni_python scripts/compute_ik_solutions.py \
 
 **실행**:
 ```bash
+# Basic usage
 omni_python scripts/fk_gtsp_gpu_claude2.py \
     --object_name glass \
     --num_viewpoints 500
+
+# With visualization (NEW)
+omni_python scripts/fk_gtsp_gpu_claude2.py \
+    --object_name glass \
+    --num_viewpoints 500 \
+    --visualize \
+    --show-frames
 ```
 
 **주요 옵션**:
@@ -171,6 +179,10 @@ omni_python scripts/fk_gtsp_gpu_claude2.py \
 - `--num_viewpoints`: 뷰포인트 개수
 - `--lam_rot 1.0`: 회전 비용 가중치
 - `--knn 5`: k-NN 이웃 개수
+- **`--visualize`**: 생성 후 trajectory 시각화 (Open3D) 🆕
+- **`--show-frames`**: 각 waypoint에 좌표계 표시 🆕
+- **`--frame-size 0.02`**: 좌표계 크기 (미터) 🆕
+- **`--mesh`**: 시각화용 메쉬 경로 (기본: 자동 감지) 🆕
 
 **출력**:
 - `data/{object_name}/trajectory/{N}/gtsp.csv`
@@ -179,6 +191,7 @@ omni_python scripts/fk_gtsp_gpu_claude2.py \
 - GPU 가속 순방향 기구학
 - 관절 공간 거리 최소화
 - 각 뷰포인트에서 최적 IK 해 선택
+- **통합 시각화 (Open3D)**
 
 ---
 
@@ -322,6 +335,49 @@ save_trajectory_csv(trajectory, "path/to/output.csv", joint_names=joint_names)
 
 **제외된 스크립트**:
 - `fk_gtsp_gpu_claude2.py` - 안정성 유지를 위해 제외
+
+---
+
+## 유틸리티 스크립트
+
+### preprocess_mesh.py
+
+**역할**: Multi-material OBJ 파일을 material별로 분리
+
+**실행**:
+```bash
+# Using object name (recommended - NEW)
+omni_python scripts/preprocess_mesh.py \
+    --object_name glass \
+    --material_rgb "0,255,0" \
+    --visualize
+
+# Using explicit paths
+omni_python scripts/preprocess_mesh.py \
+    --input data/object/sample_step_scaled.obj \
+    --material-name "Opaque(0,255,0).001" \
+    --output data/object/target_surface.ply
+```
+
+**주요 옵션**:
+- **`--object_name`**: 물체 이름으로 경로 자동 생성 (e.g., "glass", "phone") 🆕
+- `--input`: 입력 OBJ 파일 경로
+- `--output`: 출력 PLY 파일 경로 (기본: 자동 생성)
+- `--material-name`: Material 이름으로 선택
+- `--material-rgb "R,G,B"`: RGB 색상으로 선택 (권장)
+- `--color-tolerance 5.0`: RGB 매칭 허용 오차
+- `--visualize`: Open3D 시각화
+- `--no-save`: 저장 생략 (검사만)
+
+**출력**:
+- `data/{object_name}/mesh/target.ply` (when using --object_name)
+
+**특징**:
+- Trimesh 기반 정확한 material 파싱
+- RGB 색상 매칭으로 material 자동 선택
+- Binary PLY 압축 저장
+- 좌표계: Z-up (Isaac Sim 호환)
+
 ---
 
 ## 추가 문서

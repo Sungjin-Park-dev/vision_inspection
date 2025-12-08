@@ -31,6 +31,19 @@ from common.graph_utils import (
     choose_ik_given_order,
     pair_cost_matrix_joint_mid
 )
+from common.cli_utils import print_section_header, print_key_value, print_success, print_warning, print_error
+
+# Optional visualization imports
+try:
+    import open3d as o3d
+    from common.visualization_utils import (
+        load_trajectory_poses_from_csv,
+        load_mesh_for_visualization,
+        visualize_trajectory_with_mesh,
+        OPEN3D_AVAILABLE
+    )
+except ImportError:
+    OPEN3D_AVAILABLE = False
 
 
 
@@ -168,6 +181,52 @@ def main():
         default=None,
         help="Path to save trajectory CSV file (default: auto-generate in data/{object_name}/trajectory/)"
     )
+
+    # Visualization options
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Visualize trajectory with mesh after generation (requires Open3D)"
+    )
+    parser.add_argument(
+        "--mesh",
+        type=str,
+        default=None,
+        help="Path to mesh file for visualization (default: auto-detect from object_name)"
+    )
+    parser.add_argument(
+        "--no-transform",
+        action="store_true",
+        help="Skip world transformation for visualization (show mesh at origin)"
+    )
+    parser.add_argument(
+        "--show-frames",
+        action="store_true",
+        help="Show coordinate frames at each waypoint (default: show points)"
+    )
+    parser.add_argument(
+        "--frame-size",
+        type=float,
+        default=0.02,
+        help="Size of coordinate frames in meters (default: 0.02)"
+    )
+    parser.add_argument(
+        "--no-path",
+        action="store_true",
+        help="Don't show trajectory path lines in visualization"
+    )
+    parser.add_argument(
+        "--no-normals",
+        action="store_true",
+        help="Don't show viewing direction arrows in visualization"
+    )
+    parser.add_argument(
+        "--normal-length",
+        type=float,
+        default=0.05,
+        help="Length of viewing direction arrows in meters (default: 0.05)"
+    )
+
     args = parser.parse_args()
 
     # Validate and resolve paths
@@ -252,6 +311,85 @@ def main():
     file_size_kb = os.path.getsize(csv_path) / 1024 if os.path.exists(csv_path) else 0
     print(f"File size: {file_size_kb:.2f} KB")
     print(f"{'='*60}\n")
+
+    # Step 6: Visualization (optional)
+    if args.visualize:
+        if not OPEN3D_AVAILABLE:
+            print_warning("Open3D not available - skipping visualization")
+            print("  Install Open3D: pip install open3d\n")
+        else:
+            print(f"Step 6: Visualizing trajectory...")
+            print_section_header("TRAJECTORY VISUALIZATION", width=60)
+
+            # Resolve mesh path
+            mesh_path = args.mesh
+            if mesh_path is None:
+                if args.object_name:
+                    # Try target.obj first, then source.obj
+                    for mesh_name in ["target.obj", "source.obj"]:
+                        candidate = config.get_mesh_path(args.object_name, mesh_name)
+                        if candidate.exists():
+                            mesh_path = str(candidate)
+                            break
+
+                    if mesh_path is None:
+                        print_error("Cannot auto-locate mesh file")
+                        print(f"  Tried: {config.get_mesh_path(args.object_name, 'target.obj')}")
+                        print(f"  Tried: {config.get_mesh_path(args.object_name, 'source.obj')}")
+                        print("  Use --mesh to specify path explicitly")
+                        sys.exit(1)
+                else:
+                    print_error("--mesh required for visualization when --object_name not provided")
+                    sys.exit(1)
+
+            print_key_value("Mesh file", mesh_path)
+            print_key_value("CSV file", csv_path)
+            print()
+
+            # Load trajectory
+            print("Loading trajectory poses...")
+            positions, rotations = load_trajectory_poses_from_csv(csv_path)
+            print_key_value("Loaded waypoints", len(positions))
+
+            # Load mesh
+            print("\nLoading mesh...")
+            mesh = load_mesh_for_visualization(
+                mesh_path,
+                apply_world_transform=not args.no_transform,
+                glass_position=config.GLASS_POSITION if not args.no_transform else None,
+                glass_rotation=config.GLASS_ROTATION if not args.no_transform else None
+            )
+            print_key_value("Vertices", len(mesh.vertices))
+            print_key_value("Triangles", len(mesh.triangles))
+
+            # Visualize
+            print("\nOpening visualization window...")
+            print("  Legend:")
+            print("    - Gray mesh: Object")
+            print("    - Origin frame (large): World coordinate system")
+            if args.show_frames:
+                print(f"    - Small frames: Target poses (X=red, Y=green, Z=blue)")
+            else:
+                print("    - Green points: Target positions")
+            if not args.no_normals:
+                print("    - Red arrows: Camera viewing directions")
+            if not args.no_path:
+                print("    - Blue lines: Trajectory path")
+            print("\n  Controls: Mouse to rotate/zoom, 'Q' to exit\n")
+
+            visualize_trajectory_with_mesh(
+                mesh=mesh,
+                positions=positions,
+                rotations=rotations,
+                show_frames=args.show_frames,
+                frame_size=args.frame_size,
+                show_path=not args.no_path,
+                show_normals=not args.no_normals,
+                normal_length=args.normal_length,
+            )
+
+            print_success("Visualization complete")
+            print()
 
     print("✓ Section 3 완료!")
 
