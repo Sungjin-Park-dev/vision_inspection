@@ -77,8 +77,8 @@ class CuRoboCollisionChecker:
         self,
         robot_config_path: str,
         obstacle_mesh_paths: List[str],
-        glass_position: np.ndarray = None,
-        glass_rotation: np.ndarray = None,
+        target_object_position: np.ndarray = None,
+        target_object_rotation: np.ndarray = None,
         table_position: np.ndarray = None,
         table_dimensions: np.ndarray = None,
         wall_position: np.ndarray = None,
@@ -98,8 +98,8 @@ class CuRoboCollisionChecker:
         Args:
             robot_config_path: Path to CuRobo robot config YAML (e.g., ur20.yml)
             obstacle_mesh_paths: List of paths to obstacle mesh files
-            glass_position: Position of glass object in world frame (x, y, z)
-            glass_rotation: Rotation of glass object as quaternion (w, x, y, z)
+            target_object_position: Position of target object in world frame (x, y, z)
+            target_object_rotation: Rotation of target object as quaternion (w, x, y, z)
             table_position: Position of table cuboid in world frame (x, y, z)
             table_dimensions: Dimensions of table cuboid (x, y, z) in meters
             wall_position: Position of wall cuboid in world frame (x, y, z)
@@ -114,10 +114,10 @@ class CuRoboCollisionChecker:
             world_cfg: Optional WorldConfig to reuse prebuilt collision environment
         """
         # Apply config defaults
-        if glass_position is None:
-            glass_position = config.GLASS_POSITION.copy()
-        if glass_rotation is None:
-            glass_rotation = config.GLASS_ROTATION.copy()
+        if target_object_position is None:
+            target_object_position = config.TARGET_OBJECT_POSITION.copy()
+        if target_object_rotation is None:
+            target_object_rotation = config.TARGET_OBJECT_ROTATION.copy()
         if table_position is None:
             table_position = config.TABLE_POSITION.copy()
         if table_dimensions is None:
@@ -138,8 +138,8 @@ class CuRoboCollisionChecker:
             collision_margin = config.COLLISION_MARGIN
 
         self.robot_config_path = robot_config_path
-        self.glass_position = glass_position
-        self.glass_rotation = glass_rotation
+        self.target_object_position = target_object_position
+        self.target_object_rotation = target_object_rotation
         self.table_position = table_position
         self.table_dimensions = table_dimensions
         self.wall_position = wall_position
@@ -156,8 +156,8 @@ class CuRoboCollisionChecker:
 
         print_section_header("INITIALIZING CUROBO COLLISION CHECKER")
         print_key_value("Robot config", robot_config_path)
-        print_key_value("Glass position", glass_position)
-        print_key_value("Glass rotation (quat)", glass_rotation)
+        print_key_value("Target object position", target_object_position)
+        print_key_value("Target object rotation (quat)", target_object_rotation)
         print_key_value("Collision margin", f"{collision_margin} m")
         print_key_value("Device", str(self.tensor_args.device))
 
@@ -197,8 +197,8 @@ class CuRoboCollisionChecker:
             robot_mount_position=self.robot_mount_position,
             robot_mount_dimensions=self.robot_mount_dimensions,
             mesh_files=obstacle_mesh_paths,
-            mesh_position=self.glass_position,
-            mesh_rotation=self.glass_rotation,
+            mesh_position=self.target_object_position,
+            mesh_rotation=self.target_object_rotation,
             verbose=True
         )
 
@@ -1479,19 +1479,23 @@ def main():
 
     # Step 2: Create CuRobo collision checker
     print_section_header("INITIALIZING COLLISION CHECKER", width=60)
+
+    # Create obstacle configuration
+    obstacles = config.WorldObstacleConfig()
+
     checker = CuRoboCollisionChecker(
         robot_config_path=args.robot_config,
         obstacle_mesh_paths=[mesh_file],
-        glass_position=config.GLASS_POSITION,
-        glass_rotation=config.GLASS_ROTATION,
-        table_position=config.TABLE_POSITION,
-        table_dimensions=config.TABLE_DIMENSIONS,
-        wall_position=config.WALL_POSITION,
-        wall_dimensions=config.WALL_DIMENSIONS,
-        workbench_position=config.WORKBENCH_POSITION,
-        workbench_dimensions=config.WORKBENCH_DIMENSIONS,
-        robot_mount_position=config.ROBOT_MOUNT_POSITION,
-        robot_mount_dimensions=config.ROBOT_MOUNT_DIMENSIONS,
+        target_object_position=obstacles.target_object_position,
+        target_object_rotation=obstacles.target_object_rotation,
+        table_position=obstacles.table_position,
+        table_dimensions=obstacles.table_dimensions,
+        wall_position=obstacles.wall_position,
+        wall_dimensions=obstacles.wall_dimensions,
+        workbench_position=obstacles.workbench_position,
+        workbench_dimensions=obstacles.workbench_dimensions,
+        robot_mount_position=obstacles.robot_mount_position,
+        robot_mount_dimensions=obstacles.robot_mount_dimensions,
         collision_margin=config.COLLISION_MARGIN,
     )
     print_success("Collision checker initialized")

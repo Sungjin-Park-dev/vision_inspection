@@ -70,24 +70,15 @@ from common.ik_utils import (
 @dataclass
 class ComputeConfig:
     """Configuration for IK computation"""
+    # Input/Output
+    object_name: Optional[str]
+    num_viewpoints: Optional[int]
     viewpoints_path: str
     output_path: Optional[str]
     robot_config_file: str
 
-    # World configuration
-    table_position: np.ndarray = field(default_factory=lambda: config.TABLE_POSITION.copy())
-    table_dimensions: np.ndarray = field(default_factory=lambda: config.TABLE_DIMENSIONS.copy())
-    glass_position: np.ndarray = field(default_factory=lambda: config.GLASS_POSITION.copy())
-    glass_rotation: np.ndarray = field(default_factory=lambda: config.GLASS_ROTATION.copy())
-    glass_mesh_file: str = config.DEFAULT_MESH_FILE
-
-    # Additional obstacles
-    wall_position: np.ndarray = field(default_factory=lambda: config.WALL_POSITION.copy())
-    wall_dimensions: np.ndarray = field(default_factory=lambda: config.WALL_DIMENSIONS.copy())
-    workbench_position: np.ndarray = field(default_factory=lambda: config.WORKBENCH_POSITION.copy())
-    workbench_dimensions: np.ndarray = field(default_factory=lambda: config.WORKBENCH_DIMENSIONS.copy())
-    robot_mount_position: np.ndarray = field(default_factory=lambda: config.ROBOT_MOUNT_POSITION.copy())
-    robot_mount_dimensions: np.ndarray = field(default_factory=lambda: config.ROBOT_MOUNT_DIMENSIONS.copy())
+    # World configuration (consolidated)
+    obstacles: config.WorldObstacleConfig = field(default_factory=config.WorldObstacleConfig)
 
     # IK solver configuration
     ik_rotation_threshold: float = config.IK_ROTATION_THRESHOLD
@@ -101,6 +92,8 @@ class ComputeConfig:
     def from_args(cls, args: argparse.Namespace) -> 'ComputeConfig':
         """Create configuration from command line arguments"""
         return cls(
+            object_name=args.object_name,
+            num_viewpoints=args.num_viewpoints,
             viewpoints_path=args.viewpoints,
             output_path=args.output,
             robot_config_file=args.robot,
@@ -286,22 +279,12 @@ def setup_collision_world_for_ik(cfg: ComputeConfig) -> WorldConfig:
         cfg: Computation configuration
 
     Returns:
-        WorldConfig with table, glass, and additional obstacles
+        WorldConfig with table, target object, and additional obstacles
     """
     print_section_header("SETTING UP COLLISION WORLD", width=60)
 
     world_cfg = setup_collision_world(
-        table_position=cfg.table_position,
-        table_dimensions=cfg.table_dimensions,
-        wall_position=cfg.wall_position,
-        wall_dimensions=cfg.wall_dimensions,
-        workbench_position=cfg.workbench_position,
-        workbench_dimensions=cfg.workbench_dimensions,
-        robot_mount_position=cfg.robot_mount_position,
-        robot_mount_dimensions=cfg.robot_mount_dimensions,
-        mesh_files=[cfg.glass_mesh_file],
-        mesh_position=cfg.glass_position,
-        mesh_rotation=cfg.glass_rotation,
+        **cfg.obstacles.to_world_setup_kwargs(),
         verbose=True
     )
 
@@ -417,6 +400,18 @@ def main():
     # Step 1: Create configuration
     cfg = ComputeConfig.from_args(args)
 
+    # Auto-generate mesh file path if using object_name (use source mesh for collision)
+    if cfg.obstacles.target_object_mesh_file is None:
+        if args.object_name:
+            # Use source mesh (full geometry) for collision checking
+            cfg.obstacles.target_object_mesh_file = str(config.get_mesh_path(args.object_name, mesh_type="source"))
+            print(f"Using auto-generated collision mesh: {cfg.obstacles.target_object_mesh_file}")
+            print(f"  → Using 'source' mesh (full geometry for collision checking)")
+        else:
+            # Fallback to default for backward compatibility
+            cfg.obstacles.target_object_mesh_file = config.DEFAULT_MESH_FILE
+            print(f"Using default collision mesh: {cfg.obstacles.target_object_mesh_file}")
+
     # Auto-generate output path if not provided
     if cfg.output_path is None:
         if args.object_name:
@@ -451,11 +446,11 @@ def main():
         surface_positions, surface_normals, metadata, cfg
     )
 
-    # Step 6: Update world poses (glass object pose)
-    glass_world_pose = np.eye(4, dtype=np.float64)
-    glass_world_pose[:3, :3] = quaternion_to_rotation_matrix(cfg.glass_rotation)
-    glass_world_pose[:3, 3] = cfg.glass_position
-    viewpoint_mgr.update_world_poses(glass_world_pose)
+    # Step 6: Update world poses (target object pose)
+    target_object_world_pose = np.eye(4, dtype=np.float64)
+    target_object_world_pose[:3, :3] = quaternion_to_rotation_matrix(cfg.obstacles.target_object_rotation)
+    target_object_world_pose[:3, 3] = cfg.obstacles.target_object_position
+    viewpoint_mgr.update_world_poses(target_object_world_pose)
 
     # Step 7: Collect world matrices and compute IK
     print_section_header("COMPUTING IK SOLUTIONS", width=60)

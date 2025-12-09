@@ -843,8 +843,10 @@ def main():
     # Determine mesh file path
     if args.object_name:
         if args.mesh_file is None:
-            args.mesh_file = str(config.get_mesh_path(args.object_name))
+            # Use target mesh (inspection surface) for viewpoint sampling
+            args.mesh_file = str(config.get_mesh_path(args.object_name, mesh_type="target"))
             print(f"Using auto-generated mesh path: {args.mesh_file}")
+            print(f"  → Using 'target' mesh (inspection surface only)")
 
     # Create camera spec
     camera_spec = CameraSpec(

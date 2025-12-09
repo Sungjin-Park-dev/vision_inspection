@@ -79,9 +79,9 @@ def setup_collision_world(
     if robot_mount_dimensions is None:
         robot_mount_dimensions = config.ROBOT_MOUNT_DIMENSIONS.copy()
     if mesh_position is None:
-        mesh_position = config.GLASS_POSITION.copy()
+        mesh_position = config.TARGET_OBJECT_POSITION.copy()
     if mesh_rotation is None:
-        mesh_rotation = config.GLASS_ROTATION.copy()
+        mesh_rotation = config.TARGET_OBJECT_ROTATION.copy()
     if mesh_files is None:
         mesh_files = []
 
@@ -167,3 +167,31 @@ def setup_collision_world(
         print(f"  Total obstacles: {len(all_cuboids)} cuboids + {len(meshes)} meshes")
 
     return world_cfg
+
+
+def setup_collision_world_from_config(
+    obstacle_cfg: 'config.WorldObstacleConfig',
+    verbose: bool = True
+) -> WorldConfig:
+    """
+    Setup collision world from WorldObstacleConfig dataclass
+
+    Convenience wrapper around setup_collision_world() that accepts
+    a WorldObstacleConfig instance instead of individual parameters.
+
+    Args:
+        obstacle_cfg: WorldObstacleConfig instance with obstacle configuration
+        verbose: Print setup information (default: True)
+
+    Returns:
+        WorldConfig containing all configured obstacles
+
+    Example:
+        >>> from common import config
+        >>> obstacle_cfg = config.WorldObstacleConfig.from_object_name("glass")
+        >>> world_cfg = setup_collision_world_from_config(obstacle_cfg)
+        Setting up collision world...
+          Table: [1. 0. -0.425] dims=[0.6 1.  0.5]
+          ...
+    """
+    return setup_collision_world(**obstacle_cfg.to_world_setup_kwargs(), verbose=verbose)

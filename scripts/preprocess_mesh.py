@@ -20,7 +20,7 @@ Usage:
         --color-tolerance 5.0 \\
         --output data/object/target_surface.ply
 
-Coordinate system: Z-up (Isaac Sim / URDF / Pinocchio convention)
+Coordinate system: Z-up (Isaac Sim)
 """
 
 import os
@@ -100,8 +100,8 @@ class PreprocessConfig:
         """Resolve input/output paths from object_name if needed"""
         # Generate input path from object_name
         if self.input_path is None and self.object_name:
-            # Try multiple possible source files
-            possible_sources = ["target.obj", "source.obj", f"{self.object_name}.obj"]
+            # Try multiple possible source files (prioritize source.obj for preprocessing)
+            possible_sources = ["source.obj", "target.obj", f"{self.object_name}.obj"]
             for source_name in possible_sources:
                 candidate = config.get_mesh_path(self.object_name, source_name)
                 if candidate.exists():
@@ -112,10 +112,10 @@ class PreprocessConfig:
                 # Default to source.obj even if it doesn't exist (will error later)
                 self.input_path = str(config.get_mesh_path(self.object_name, "source.obj"))
 
-        # Generate output path
+        # Generate output path (always target.ply for consistency with pipeline)
         if self.output_path is None:
             if self.object_name:
-                # New structure: data/{object_name}/mesh/target.ply
+                # Pipeline structure: data/{object_name}/mesh/target.ply
                 self.output_path = str(config.get_mesh_path(self.object_name, "target.ply"))
             elif self.input_path:
                 # Fallback: same directory as input

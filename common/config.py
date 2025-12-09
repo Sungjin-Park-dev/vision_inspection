@@ -73,16 +73,16 @@ def get_camera_working_distance_m() -> float:
 # World Configuration (Isaac Sim coordinates, meters)
 # ============================================================================
 
-# Glass object position in world frame (x, y, z)
+# Target object position in world frame (x, y, z)
 # Glass -0.13
 # Phone -0.17
 # TV -0.145
 
-GLASS_POSITION = np.array([1.00, 0.0, -0.172], dtype=np.float64)
+TARGET_OBJECT_POSITION = np.array([1.00, 0.0, -0.172], dtype=np.float64)
 
-# Glass object orientation in world frame (quaternion: w, x, y, z)
+# Target object orientation in world frame (quaternion: w, x, y, z)
 # Identity quaternion = no rotation
-GLASS_ROTATION = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+TARGET_OBJECT_ROTATION = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
 # Table cuboid position in world frame (x, y, z)
 TABLE_POSITION = np.array([1.0, 0.0, -0.425], dtype=np.float64)
@@ -114,6 +114,91 @@ ROBOT_MOUNT_DIMENSIONS = np.array([0.3, 0.3, 0.5], dtype=np.float64)
 
 
 # ============================================================================
+# World Obstacle Configuration (Consolidated)
+# ============================================================================
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+@dataclass
+class WorldObstacleConfig:
+    """
+    Centralized world obstacle configuration for collision checking
+
+    Consolidates obstacle positions and dimensions used across:
+    - compute_ik_solutions.py
+    - check_collision.py
+    - simulate_trajectory.py
+
+    All measurements in meters, Z-up coordinate system.
+    """
+    # Target object (inspection object)
+    target_object_position: np.ndarray = field(default_factory=lambda: TARGET_OBJECT_POSITION.copy())
+    target_object_rotation: np.ndarray = field(default_factory=lambda: TARGET_OBJECT_ROTATION.copy())
+    target_object_mesh_file: Optional[str] = None
+
+    # Table
+    table_position: np.ndarray = field(default_factory=lambda: TABLE_POSITION.copy())
+    table_dimensions: np.ndarray = field(default_factory=lambda: TABLE_DIMENSIONS.copy())
+
+    # Wall
+    wall_position: np.ndarray = field(default_factory=lambda: WALL_POSITION.copy())
+    wall_dimensions: np.ndarray = field(default_factory=lambda: WALL_DIMENSIONS.copy())
+
+    # Workbench
+    workbench_position: np.ndarray = field(default_factory=lambda: WORKBENCH_POSITION.copy())
+    workbench_dimensions: np.ndarray = field(default_factory=lambda: WORKBENCH_DIMENSIONS.copy())
+
+    # Robot mount
+    robot_mount_position: np.ndarray = field(default_factory=lambda: ROBOT_MOUNT_POSITION.copy())
+    robot_mount_dimensions: np.ndarray = field(default_factory=lambda: ROBOT_MOUNT_DIMENSIONS.copy())
+
+    @classmethod
+    def from_object_name(cls, object_name: str, mesh_type: str = "source") -> 'WorldObstacleConfig':
+        """Create config with auto-resolved mesh path
+
+        Args:
+            object_name: Name of the object (e.g., 'glass', 'phone')
+            mesh_type: Type of mesh ('source' or 'target')
+
+        Returns:
+            WorldObstacleConfig with mesh file path resolved
+        """
+        return cls(target_object_mesh_file=str(get_mesh_path(object_name, mesh_type=mesh_type)))
+
+    def to_world_setup_kwargs(self) -> dict:
+        """Convert to kwargs for setup_collision_world()
+
+        Returns:
+            Dictionary of parameters for setup_collision_world()
+        """
+        return {
+            'table_position': self.table_position,
+            'table_dimensions': self.table_dimensions,
+            'wall_position': self.wall_position,
+            'wall_dimensions': self.wall_dimensions,
+            'workbench_position': self.workbench_position,
+            'workbench_dimensions': self.workbench_dimensions,
+            'robot_mount_position': self.robot_mount_position,
+            'robot_mount_dimensions': self.robot_mount_dimensions,
+            'mesh_files': [self.target_object_mesh_file] if self.target_object_mesh_file else [],
+            'mesh_position': self.target_object_position,
+            'mesh_rotation': self.target_object_rotation,
+        }
+
+
+# ============================================================================
+# Backward Compatibility Aliases (Notebook Compatibility)
+# ============================================================================
+# These aliases maintain compatibility with vision_inspection_pipeline.ipynb
+# TODO: Remove after notebook migration to new naming
+
+GLASS_POSITION = TARGET_OBJECT_POSITION  # Deprecated: Use TARGET_OBJECT_POSITION
+GLASS_ROTATION = TARGET_OBJECT_ROTATION  # Deprecated: Use TARGET_OBJECT_ROTATION
+
+
+# ============================================================================
 # File Paths
 # ============================================================================
 
@@ -133,21 +218,43 @@ MESH_BASE_PATH = "ur_description"
 # Object-Based Data Path Helpers
 # ============================================================================
 
-def get_mesh_path(object_name: str, filename: str = "target.obj") -> Path:
+def get_mesh_path(object_name: str, filename: str = None, mesh_type: str = "target") -> Path:
     """
     Get path to object mesh file
 
     Args:
         object_name: Name of the object (e.g., "glass", "phone")
-        filename: Mesh filename (default: "target.obj")
+        filename: Explicit mesh filename (overrides mesh_type if provided)
+        mesh_type: Type of mesh file (default: "target")
+            - "source": source.obj (full multi-material mesh for collision checking)
+            - "target": target.ply (inspection surface for viewpoint sampling)
 
     Returns:
         Path to mesh file: data/{object_name}/mesh/{filename}
 
-    Example:
-        >>> get_mesh_path("glass")
-        PosixPath('data/glass/mesh/target.obj')
+    Examples:
+        >>> get_mesh_path("glass")  # Default: target mesh
+        PosixPath('data/glass/mesh/target.ply')  # or target.obj if .ply doesn't exist
+
+        >>> get_mesh_path("glass", mesh_type="source")  # Full mesh for collision
+        PosixPath('data/glass/mesh/source.obj')
+
+        >>> get_mesh_path("glass", filename="custom.obj")  # Explicit filename
+        PosixPath('data/glass/mesh/custom.obj')
     """
+    if filename is None:
+        # Auto-determine filename based on mesh_type
+        if mesh_type == "source":
+            filename = "source.obj"
+        elif mesh_type == "target":
+            # Try target.ply first (preferred for inspection), fallback to target.obj
+            target_ply = DATA_ROOT / object_name / "mesh" / "target.ply"
+            if target_ply.exists():
+                return target_ply
+            filename = "target.obj"
+        else:
+            raise ValueError(f"Invalid mesh_type: '{mesh_type}'. Must be 'source' or 'target'")
+
     return DATA_ROOT / object_name / "mesh" / filename
 
 
@@ -215,7 +322,6 @@ def get_trajectory_path(object_name: str, num_viewpoints: int, filename: str = "
 # ============================================================================
 
 # Trajectory interpolation
-INTERPOLATION_STEPS = 60  # Number of steps between waypoints
 
 # IK Solver
 IK_NUM_SEEDS = 20  # Number of random seeds for IK solver
@@ -226,37 +332,12 @@ IK_POSITION_THRESHOLD = 0.005  # Position error threshold (meters)
 N_OBSTACLE_CUBOIDS = 30  # Maximum number of cuboid obstacles for collision cache
 N_OBSTACLE_MESH = 10  # Maximum number of mesh obstacles for collision cache
 
-# Joint selection (for DP algorithm in run_app_v3.py)
-JOINT_WEIGHTS = np.array([2.0, 2.0, 2.0, 1.0, 1.0, 1.0], dtype=np.float64)
-RECONFIGURATION_THRESHOLD = 1.0  # radians (deprecated, use RECONFIG_JOINT_THRESHOLD)
-RECONFIGURATION_PENALTY = 10.0
-MAX_MOVE_WEIGHT = 5.0
-
-# Enhanced reconfiguration detection (4-condition logic)
-RECONFIG_EE_FRAME_NAME = "tool0"  # End-effector frame for FK computation
-RECONFIG_POSITION_THRESHOLD = 0.2  # meters - max EE position change
-RECONFIG_ANGLE_THRESHOLD = 0.5  # radians (~28.6 degrees) - max EE z-axis angle change
-RECONFIG_JOINT_THRESHOLD = 1.0  # radians - max single joint change
-RECONFIG_DEVIATION_THRESHOLD = 0.1  # meters - max deviation from straight line
-RECONFIG_INTERPOLATION_SAMPLES = 2  # number of interpolation samples to check
-RECONFIG_FACTOR = 1.0  # global scaling factor for all thresholds
-
 # Collision checking
 COLLISION_MARGIN = 0.0  # Safety margin in meters (0 = no margin)
-COLLISION_INTERP_STEPS = 10  # Interpolation steps for collision checking (CPU linear only)
-COLLISION_USE_LINK_MESHES = False  # Use actual collision meshes from URDF
-COLLISION_SHOW_LINK_DETAILS = False  # Show detailed link collision info
-COLLISION_VERBOSE = True  # Print detailed progress
-COLLISION_PARALLEL = True  # Enable parallel collision checking
-COLLISION_NUM_WORKERS = None  # Number of workers for parallel (None = auto)
-COLLISION_ADAPTIVE_INTERP = True  # Vary interpolation density per segment based on joint deltas
 COLLISION_INTERP_EXCLUDE_LAST_JOINT = True  # Exclude last joint when computing max delta for interpolation
 
 # interpolation할때 최소 단위
 COLLISION_ADAPTIVE_MAX_JOINT_STEP_DEG = 1.0  # Max joint delta (deg) allowed per interpolation gap
-COLLISION_ADAPTIVE_LAST_JOINT_STEP_DEG = 5.0  # Max step for last joint (wrist_3) - less critical for collisions
-COLLISION_ADAPTIVE_MIN_STEPS = 0  # Minimum interpolation steps per segment in adaptive mode
-COLLISION_ADAPTIVE_MAX_STEPS = None  # Optional cap on interpolation steps per segment (None = no cap)
 
 # Replanning parameters
 REPLAN_ENABLED = True  # Attempt replanning for collisions/reconfigurations
@@ -265,28 +346,6 @@ REPLAN_MAX_ATTEMPTS = 3  # Maximum attempts for each planning request
 REPLAN_INTERP_DT = 0.02  # Interpolation dt for trajectories
 REPLAN_INTERP_STEPS = 5000  # Interpolation steps for trajectories
 REPLAN_TRAJOPT_TSTEPS = 32  # Trajectory optimization timesteps
-
-
-# ============================================================================
-# TSP Parameters
-# ============================================================================
-
-# TSP algorithm defaults
-TSP_NUM_STARTS = 10  # Number of random starting points for heuristics
-TSP_MAX_2OPT_ITERATIONS = 100  # Max iterations for 2-opt refinement
-
-
-# ============================================================================
-# Viewpoint Sampling Parameters
-# ============================================================================
-
-# Auto-calculation defaults
-VIEWPOINT_TARGET_COVERAGE = 1.0  # Target coverage ratio (1.0 = 100%)
-VIEWPOINT_CURVATURE_FACTOR = 1.5  # Multiplier for high-curvature regions
-
-# Voxel-based coverage calculation
-VOXEL_SIZE_MM = 2.0  # Voxel size in mm for coverage analysis
-
 
 # ============================================================================
 # Coordinate System Notes

@@ -3,17 +3,17 @@
 Simulate Robot Trajectory in Isaac Sim
 
 This script:
-1. Loads joint trajectory from CSV file
+1. Loads joint trajectory from auto-generated path (object_name + num_viewpoints)
 2. Initializes Isaac Sim world with robot and glass object
 3. Executes trajectory and visualizes robot motion
 
 The trajectory is executed directly without additional interpolation.
-Use collision-checked trajectory from curobo_check.py for collision-free execution.
+Use collision-checked trajectory (gtsp_final.csv) from check_collision.py.
 
 Usage:
     omni_python scripts/simulate_trajectory.py \\
-        --trajectory data/trajectory/3000/joint_trajectory_dp_curobo_interpolated.csv \\
-        --robot ur20.yml \\
+        --object_name glass \\
+        --num_viewpoints 500 \\
         --visualize_spheres
 """
 
@@ -48,18 +48,38 @@ except ImportError:
 from isaacsim.simulation_app import SimulationApp
 
 # Parse arguments before SimulationApp initialization
-parser = argparse.ArgumentParser(description="Simulate robot trajectory in Isaac Sim")
+parser = argparse.ArgumentParser(
+    description="Simulate robot trajectory in Isaac Sim",
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    epilog="""
+Example:
+  omni_python scripts/simulate_trajectory.py \\
+      --object_name glass \\
+      --num_viewpoints 500 \\
+      --visualize_spheres
+    """
+)
+
+# Required input arguments
 parser.add_argument(
-    "--trajectory",
+    "--object_name",
     type=str,
     required=True,
-    help="Path to joint trajectory CSV file"
+    help="Object name for auto-path generation (e.g., 'glass', 'phone')"
 )
+
+parser.add_argument(
+    "--num_viewpoints",
+    type=int,
+    required=True,
+    help="Number of viewpoints"
+)
+
 parser.add_argument(
     "--robot",
     type=str,
     default="ur20_safe.yml",
-    help="Robot configuration file (default: ur20.yml)"
+    help="Robot configuration file (default: ur20_safe.yml)"
 )
 parser.add_argument(
     "--headless",
@@ -104,7 +124,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-# Initialize SimulationApp
+# Initialize SimulationApp (must happen before importing other modules)
 simulation_app = SimulationApp({
     "headless": args.headless is not None,
     "width": "1280",
@@ -154,14 +174,34 @@ from common.world_setup import setup_collision_world
 from common.data_io import load_trajectory_csv
 from common.simulation_helper import add_extensions, add_robot_to_scene
 
+# ============================================================================
+# Resolve Trajectory Path (after config import)
+# ============================================================================
+# Auto-generate trajectory path from object_name and num_viewpoints
+trajectory_path = str(config.get_trajectory_path(
+    args.object_name,
+    args.num_viewpoints,
+    "gtsp_final.csv"
+))
+print(f"Auto-generated trajectory path: {trajectory_path}")
+args.trajectory = trajectory_path
+
 
 # ============================================================================
 # Configuration Classes
 # ============================================================================
 @dataclass
 class SimulationConfig:
-    """Configuration for simulation"""
-    trajectory_path: str
+    """Configuration for simulation
+
+    Uses auto-path mode: --object_name + --num_viewpoints
+    """
+    # Input (required)
+    object_name: str
+    num_viewpoints: int
+    trajectory_path: str  # Auto-generated from object_name + num_viewpoints
+
+    # Robot and simulation
     robot_config_file: str
     headless_mode: str
     visualize_spheres: bool
@@ -173,24 +213,15 @@ class SimulationConfig:
     min_steps: int
     max_steps: int
 
-    # World configuration
-    table_position: np.ndarray = field(default_factory=lambda: config.TABLE_POSITION.copy())
-    table_dimensions: np.ndarray = field(default_factory=lambda: config.TABLE_DIMENSIONS.copy())
-    glass_position: np.ndarray = field(default_factory=lambda: config.GLASS_POSITION.copy())
-    glass_rotation: np.ndarray = field(default_factory=lambda: config.GLASS_ROTATION.copy())
-
-    # Additional obstacles
-    wall_position: np.ndarray = field(default_factory=lambda: config.WALL_POSITION.copy())
-    wall_dimensions: np.ndarray = field(default_factory=lambda: config.WALL_DIMENSIONS.copy())
-    workbench_position: np.ndarray = field(default_factory=lambda: config.WORKBENCH_POSITION.copy())
-    workbench_dimensions: np.ndarray = field(default_factory=lambda: config.WORKBENCH_DIMENSIONS.copy())
-    robot_mount_position: np.ndarray = field(default_factory=lambda: config.ROBOT_MOUNT_POSITION.copy())
-    robot_mount_dimensions: np.ndarray = field(default_factory=lambda: config.ROBOT_MOUNT_DIMENSIONS.copy())
+    # World configuration (consolidated)
+    obstacles: config.WorldObstacleConfig = field(default_factory=config.WorldObstacleConfig)
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> 'SimulationConfig':
         """Create configuration from command line arguments"""
         return cls(
+            object_name=args.object_name,
+            num_viewpoints=args.num_viewpoints,
             trajectory_path=args.trajectory,
             robot_config_file=args.robot,
             headless_mode=args.headless,
@@ -207,7 +238,7 @@ class SimulationConfig:
 class WorldState:
     """Encapsulates Isaac Sim world state"""
     world: World
-    glass_prim: XFormPrim
+    target_object_prim: XFormPrim
     robot: any
     idx_list: List[int]
     ik_solver: IKSolver
@@ -334,49 +365,52 @@ def setup_robot(my_world: World, cfg: SimulationConfig) -> dict:
     }
 
 
-def setup_glass_object_from_mesh(my_world: World, cfg: SimulationConfig, usd_helper: UsdHelper) -> XFormPrim:
-    """Setup glass object using mesh file"""
-    mesh_file_path = config.DEFAULT_MESH_FILE
+def setup_object_from_mesh(my_world: World, cfg: SimulationConfig, usd_helper: UsdHelper) -> XFormPrim:
+    """Setup inspection object using mesh file"""
+    # Use source mesh (full geometry) for visualization and collision
+    mesh_file_path = str(config.get_mesh_path(cfg.object_name, mesh_type="source"))
+    print(f"Using collision mesh: {mesh_file_path}")
+    print(f"  → Using 'source' mesh (full geometry)")
 
-    print_section_header("ADDING GLASS MESH TO STAGE", width=60)
+    print_section_header("ADDING OBJECT MESH TO STAGE", width=60)
     print_key_value("Mesh file", mesh_file_path)
-    print_key_value("Position", cfg.glass_position)
+    print_key_value("Position", cfg.obstacles.target_object_position)
     print()
 
     usd_helper.load_stage(my_world.stage)
 
 
-    glass_mesh = Mesh(
-        name="glass",
+    target_object_mesh = Mesh(
+        name="target_object",
         file_path=mesh_file_path,
-        pose=list(cfg.glass_position) + [1, 0, 0, 0],
+        pose=list(cfg.obstacles.target_object_position) + [1, 0, 0, 0],
         color=[1.0, 0.1, 0.1, 0.95]
     )
 
-    glass_path = usd_helper.add_mesh_to_stage(
-        obstacle=glass_mesh,
+    target_object_path = usd_helper.add_mesh_to_stage(
+        obstacle=target_object_mesh,
         base_frame="/World"
     )
 
-    print_key_value("Glass prim path", glass_path)
+    print_key_value("Object prim path", target_object_path)
 
-    glass_prim = XFormPrim(glass_path)
+    target_object_prim = XFormPrim(target_object_path)
 
-    # Apply glass material (optional)
+    # Apply material (optional - example for glass)
     # try:
-    #     glass_material = OmniGlass(
-    #         prim_path="/World/Looks/glass_mat",
+    #     material = OmniGlass(
+    #         prim_path="/World/Looks/object_mat",
     #         color=np.array([0.7, 0.85, 0.9]),
     #         ior=1.52,
     #         depth=0.01,
     #         thin_walled=False,
     #     )
-    #     glass_prim.apply_visual_material(glass_material)
+    #     target_object_prim.apply_visual_material(material)
     #     print("Applied OmniGlass material")
     # except Exception as e:
-    #     print(f"Warning: Could not apply glass material: {e}")
+    #     print(f"Warning: Could not apply material: {e}")
 
-    return glass_prim
+    return target_object_prim
 
 
 def setup_camera(robot_prim_path: str, my_world: World):
@@ -422,14 +456,14 @@ def setup_collision_checker(
 
     # Setup world collision configuration using common utility
     world_cfg = setup_collision_world(
-        table_position=cfg.table_position,
-        table_dimensions=cfg.table_dimensions,
-        wall_position=cfg.wall_position,
-        wall_dimensions=cfg.wall_dimensions,
-        workbench_position=cfg.workbench_position,
-        workbench_dimensions=cfg.workbench_dimensions,
-        robot_mount_position=cfg.robot_mount_position,
-        robot_mount_dimensions=cfg.robot_mount_dimensions,
+        table_position=cfg.obstacles.table_position,
+        table_dimensions=cfg.obstacles.table_dimensions,
+        wall_position=cfg.obstacles.wall_position,
+        wall_dimensions=cfg.obstacles.wall_dimensions,
+        workbench_position=cfg.obstacles.workbench_position,
+        workbench_dimensions=cfg.obstacles.workbench_dimensions,
+        robot_mount_position=cfg.obstacles.robot_mount_position,
+        robot_mount_dimensions=cfg.obstacles.robot_mount_dimensions,
         mesh_files=[],  # No mesh obstacles for visualization
         verbose=False
     )
@@ -492,14 +526,14 @@ def initialize_simulation(cfg: SimulationConfig) -> WorldState:
     robot_state = setup_robot(my_world, cfg)
 
     usd_helper = UsdHelper()
-    glass_prim = setup_glass_object_from_mesh(my_world, cfg, usd_helper)
+    target_object_prim = setup_object_from_mesh(my_world, cfg, usd_helper)
 
     camera = setup_camera(robot_state['robot_prim_path'], my_world)
     ik_solver = setup_collision_checker(my_world, robot_state, cfg)
 
     return WorldState(
         world=my_world,
-        glass_prim=glass_prim,
+        target_object_prim=target_object_prim,
         robot=robot_state['robot'],
         idx_list=robot_state['idx_list'],
         ik_solver=ik_solver,
@@ -695,7 +729,11 @@ def main():
     cfg = SimulationConfig.from_args(args)
 
     print_section_header("SIMULATE TRAJECTORY", width=60)
-    print_key_value("Trajectory", cfg.trajectory_path)
+
+    # Show configuration
+    print_key_value("Object name", cfg.object_name)
+    print_key_value("Num viewpoints", cfg.num_viewpoints)
+    print_key_value("Trajectory path", cfg.trajectory_path)
     print_key_value("Robot config", cfg.robot_config_file)
     print_key_value("Debug mode", "Enabled" if cfg.debug else "Disabled")
     if cfg.debug:

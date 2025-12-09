@@ -65,54 +65,6 @@ def generate_interpolated_path(
 
     return path
 
-
-def compute_adaptive_steps(
-    start: np.ndarray,
-    end: np.ndarray,
-    steps_per_radian: float,
-    min_steps: int,
-    max_steps: int
-) -> int:
-    """
-    Compute number of interpolation steps based on joint space distance
-
-    Calculates the required number of interpolation steps between two
-    joint configurations based on their Euclidean distance in joint space.
-    Excludes the last joint (wrist_3) from distance calculation as it
-    only affects tool rotation, not collision.
-
-    Args:
-        start: Starting joint configuration
-        end: Ending joint configuration
-        steps_per_radian: Number of steps per radian of movement
-        min_steps: Minimum number of steps
-        max_steps: Maximum number of steps
-
-    Returns:
-        Number of interpolation steps (clamped to [min_steps, max_steps])
-
-    Example:
-        >>> start = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        >>> end = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 2.0])
-        >>> steps = compute_adaptive_steps(start, end, 10.0, 5, 100)
-        >>> 5 <= steps <= 100
-        True
-    """
-    # Exclude last joint (wrist_3) from distance calculation
-    # Last joint only affects tool rotation, not collision
-    start_excl_last = start[:-1] if len(start) > 1 else start
-    end_excl_last = end[:-1] if len(end) > 1 else end
-
-    # Compute Euclidean distance in joint space (excluding last joint)
-    distance = np.linalg.norm(end_excl_last - start_excl_last)
-
-    # Calculate steps proportional to distance
-    steps = int(distance * steps_per_radian)
-
-    # Clamp to [min_steps, max_steps]
-    return max(min_steps, min(steps, max_steps))
-
-
 if __name__ == "__main__":
     # Run doctests
     import doctest
